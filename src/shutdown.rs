@@ -79,7 +79,10 @@ fn kill_process(pid: u32) {
         unsafe {
             let ret = libc::kill(ipid, libc::SIGKILL);
             if ret != 0 {
-                tracing::debug!(pid, "kill() returned error (process may have already exited)");
+                tracing::debug!(
+                    pid,
+                    "kill() returned error (process may have already exited)"
+                );
             }
         }
     }

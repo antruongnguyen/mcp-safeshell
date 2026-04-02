@@ -256,35 +256,31 @@ impl SafeShellServer {
 
         let (shell, shell_flag) = resolve_shell(&self.config);
 
-        let result = tokio::time::timeout(
-            std::time::Duration::from_secs(timeout_secs),
-            async {
-                let child = tokio::process::Command::new(&shell)
-                    .arg(&shell_flag)
-                    .arg(&full_command)
-                    .current_dir(&working_dir)
-                    .stdout(Stdio::piped())
-                    .stderr(Stdio::piped())
-                    .stdin(Stdio::null())
-                    .spawn()
-                    .map_err(std::io::Error::from)?;
+        let result = tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), async {
+            let child = tokio::process::Command::new(&shell)
+                .arg(&shell_flag)
+                .arg(&full_command)
+                .current_dir(&working_dir)
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .stdin(Stdio::null())
+                .spawn()?;
 
-                // Track the child PID so it can be killed on shutdown.
-                let pid = child.id();
-                if let Some(pid) = pid {
-                    self.child_tracker.add(pid);
-                }
+            // Track the child PID so it can be killed on shutdown.
+            let pid = child.id();
+            if let Some(pid) = pid {
+                self.child_tracker.add(pid);
+            }
 
-                let output = child.wait_with_output().await;
+            let output = child.wait_with_output().await;
 
-                // Untrack after the process exits.
-                if let Some(pid) = pid {
-                    self.child_tracker.remove(pid);
-                }
+            // Untrack after the process exits.
+            if let Some(pid) = pid {
+                self.child_tracker.remove(pid);
+            }
 
-                output
-            },
-        )
+            output
+        })
         .await;
 
         let duration_ms = start.elapsed().as_millis() as u64;
