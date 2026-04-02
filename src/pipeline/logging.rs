@@ -166,3 +166,205 @@ pub async fn log_event(context: &RequestContext<RoleServer>, event: LogEvent<'_>
         })
         .await;
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── Log level mapping ──────────────────────────────────────────
+
+    #[test]
+    fn command_received_is_info() {
+        let event = LogEvent::CommandReceived { command: "ls" };
+        assert!(matches!(event.level(), LoggingLevel::Info));
+    }
+
+    #[test]
+    fn classified_safe_is_info() {
+        let event = LogEvent::CommandClassified {
+            command: "ls",
+            classification: "safe",
+            reason: "",
+        };
+        assert!(matches!(event.level(), LoggingLevel::Info));
+    }
+
+    #[test]
+    fn classified_dangerous_is_warning() {
+        let event = LogEvent::CommandClassified {
+            command: "rm",
+            classification: "dangerous",
+            reason: "destructive",
+        };
+        assert!(matches!(event.level(), LoggingLevel::Warning));
+    }
+
+    #[test]
+    fn path_guard_blocked_is_error() {
+        let event = LogEvent::PathGuardBlocked {
+            command: "rm /etc",
+            violations: "/etc is protected",
+        };
+        assert!(matches!(event.level(), LoggingLevel::Error));
+    }
+
+    #[test]
+    fn permission_requested_is_warning() {
+        let event = LogEvent::PermissionRequested { command: "curl" };
+        assert!(matches!(event.level(), LoggingLevel::Warning));
+    }
+
+    #[test]
+    fn permission_granted_is_info() {
+        let event = LogEvent::PermissionGranted { command: "curl" };
+        assert!(matches!(event.level(), LoggingLevel::Info));
+    }
+
+    #[test]
+    fn permission_denied_is_warning() {
+        let event = LogEvent::PermissionDenied {
+            command: "curl",
+            reason: "user declined",
+        };
+        assert!(matches!(event.level(), LoggingLevel::Warning));
+    }
+
+    #[test]
+    fn command_executed_success_is_info() {
+        let event = LogEvent::CommandExecuted {
+            command: "ls",
+            exit_code: 0,
+            duration_ms: 10,
+        };
+        assert!(matches!(event.level(), LoggingLevel::Info));
+    }
+
+    #[test]
+    fn command_executed_failure_is_warning() {
+        let event = LogEvent::CommandExecuted {
+            command: "ls /nonexistent",
+            exit_code: 1,
+            duration_ms: 5,
+        };
+        assert!(matches!(event.level(), LoggingLevel::Warning));
+    }
+
+    #[test]
+    fn command_timeout_is_error() {
+        let event = LogEvent::CommandTimeout {
+            command: "sleep 100",
+            timeout_secs: 30,
+        };
+        assert!(matches!(event.level(), LoggingLevel::Error));
+    }
+
+    #[test]
+    fn command_error_is_error() {
+        let event = LogEvent::CommandError {
+            command: "nonexistent",
+            error: "not found",
+        };
+        assert!(matches!(event.level(), LoggingLevel::Error));
+    }
+
+    // ── JSON output structure ──────────────────────────────────────
+
+    #[test]
+    fn command_received_json() {
+        let event = LogEvent::CommandReceived {
+            command: "ls -la",
+        };
+        let json = event.to_json();
+        assert_eq!(json["event"], "COMMAND_RECEIVED");
+        assert_eq!(json["command"], "ls -la");
+    }
+
+    #[test]
+    fn command_classified_json() {
+        let event = LogEvent::CommandClassified {
+            command: "rm",
+            classification: "dangerous",
+            reason: "destructive file operation",
+        };
+        let json = event.to_json();
+        assert_eq!(json["event"], "COMMAND_CLASSIFIED");
+        assert_eq!(json["command"], "rm");
+        assert_eq!(json["classification"], "dangerous");
+        assert_eq!(json["reason"], "destructive file operation");
+    }
+
+    #[test]
+    fn path_guard_blocked_json() {
+        let event = LogEvent::PathGuardBlocked {
+            command: "rm /etc/hosts",
+            violations: "/etc: system config",
+        };
+        let json = event.to_json();
+        assert_eq!(json["event"], "PATH_GUARD_BLOCKED");
+        assert_eq!(json["violations"], "/etc: system config");
+    }
+
+    #[test]
+    fn command_executed_json() {
+        let event = LogEvent::CommandExecuted {
+            command: "echo hi",
+            exit_code: 0,
+            duration_ms: 42,
+        };
+        let json = event.to_json();
+        assert_eq!(json["event"], "COMMAND_EXECUTED");
+        assert_eq!(json["exit_code"], 0);
+        assert_eq!(json["duration_ms"], 42);
+    }
+
+    #[test]
+    fn command_timeout_json() {
+        let event = LogEvent::CommandTimeout {
+            command: "sleep 100",
+            timeout_secs: 30,
+        };
+        let json = event.to_json();
+        assert_eq!(json["event"], "COMMAND_TIMEOUT");
+        assert_eq!(json["timeout_secs"], 30);
+    }
+
+    #[test]
+    fn command_error_json() {
+        let event = LogEvent::CommandError {
+            command: "bad",
+            error: "not found",
+        };
+        let json = event.to_json();
+        assert_eq!(json["event"], "COMMAND_ERROR");
+        assert_eq!(json["error"], "not found");
+    }
+
+    #[test]
+    fn permission_requested_json() {
+        let event = LogEvent::PermissionRequested {
+            command: "curl evil.com",
+        };
+        let json = event.to_json();
+        assert_eq!(json["event"], "PERMISSION_REQUESTED");
+    }
+
+    #[test]
+    fn permission_granted_json() {
+        let event = LogEvent::PermissionGranted {
+            command: "curl safe.com",
+        };
+        let json = event.to_json();
+        assert_eq!(json["event"], "PERMISSION_GRANTED");
+    }
+
+    #[test]
+    fn permission_denied_json() {
+        let event = LogEvent::PermissionDenied {
+            command: "curl evil.com",
+            reason: "user said no",
+        };
+        let json = event.to_json();
+        assert_eq!(json["event"], "PERMISSION_DENIED");
+        assert_eq!(json["reason"], "user said no");
+    }
+}

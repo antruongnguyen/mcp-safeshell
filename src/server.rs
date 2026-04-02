@@ -525,6 +525,8 @@ fn shell_with_flag(shell: &str) -> (String, String) {
 mod tests {
     use super::*;
 
+    // ── shell_with_flag tests ──────────────────────────────────────
+
     #[test]
     fn shell_with_flag_posix_shells() {
         assert_eq!(
@@ -542,6 +544,14 @@ mod tests {
         assert_eq!(
             shell_with_flag("/usr/bin/dash"),
             ("/usr/bin/dash".to_string(), "-c".to_string())
+        );
+    }
+
+    #[test]
+    fn shell_with_flag_ksh() {
+        assert_eq!(
+            shell_with_flag("/bin/ksh"),
+            ("/bin/ksh".to_string(), "-c".to_string())
         );
     }
 
@@ -573,6 +583,18 @@ mod tests {
     }
 
     #[test]
+    fn shell_with_flag_powershell_case_insensitive() {
+        assert_eq!(
+            shell_with_flag("PowerShell.exe"),
+            ("PowerShell.exe".to_string(), "-Command".to_string())
+        );
+        assert_eq!(
+            shell_with_flag("PWSH"),
+            ("PWSH".to_string(), "-Command".to_string())
+        );
+    }
+
+    #[test]
     fn shell_with_flag_cmd() {
         assert_eq!(
             shell_with_flag("cmd.exe"),
@@ -586,6 +608,25 @@ mod tests {
             )
         );
     }
+
+    #[test]
+    fn shell_with_flag_cmd_case_insensitive() {
+        assert_eq!(
+            shell_with_flag("CMD.EXE"),
+            ("CMD.EXE".to_string(), "/C".to_string())
+        );
+    }
+
+    #[test]
+    fn shell_with_flag_unknown_shell() {
+        // Unknown shell should default to POSIX -c
+        assert_eq!(
+            shell_with_flag("/usr/local/bin/custom_shell"),
+            ("/usr/local/bin/custom_shell".to_string(), "-c".to_string())
+        );
+    }
+
+    // ── resolve_shell tests ────────────────────────────────────────
 
     #[test]
     fn resolve_shell_config_override() {
@@ -605,6 +646,15 @@ mod tests {
         assert_eq!(flag, "-Command");
     }
 
+    #[test]
+    fn resolve_shell_config_cmd_override() {
+        let mut config = Config::default();
+        config.shell = Some("cmd.exe".to_string());
+        let (shell, flag) = resolve_shell(&config);
+        assert_eq!(shell, "cmd.exe");
+        assert_eq!(flag, "/C");
+    }
+
     #[cfg(not(target_os = "windows"))]
     #[test]
     fn resolve_shell_unix_fallback() {
@@ -612,11 +662,115 @@ mod tests {
             shell: None,
             ..Config::default()
         };
-        // With no config override and potentially invalid $SHELL,
-        // the result must be a valid shell + flag pair.
         let (shell, flag) = resolve_shell(&config);
         assert!(!shell.is_empty());
         assert!(flag == "-c" || flag == "-Command");
+    }
+
+    // ── truncate_output tests ──────────────────────────────────────
+
+    #[test]
+    fn truncate_output_within_limit() {
+        let data = b"hello world";
+        let (text, truncated) = truncate_output(data, 100);
+        assert_eq!(text, "hello world");
+        assert!(!truncated);
+    }
+
+    #[test]
+    fn truncate_output_exactly_at_limit() {
+        let data = b"12345";
+        let (text, truncated) = truncate_output(data, 5);
+        assert_eq!(text, "12345");
+        assert!(!truncated);
+    }
+
+    #[test]
+    fn truncate_output_exceeds_limit() {
+        let data = b"hello world, this is a long string";
+        let (text, truncated) = truncate_output(data, 5);
+        assert_eq!(text, "hello");
+        assert!(truncated);
+    }
+
+    #[test]
+    fn truncate_output_empty() {
+        let data = b"";
+        let (text, truncated) = truncate_output(data, 100);
+        assert_eq!(text, "");
+        assert!(!truncated);
+    }
+
+    #[test]
+    fn truncate_output_zero_limit() {
+        let data = b"hello";
+        let (text, truncated) = truncate_output(data, 0);
+        assert_eq!(text, "");
+        assert!(truncated);
+    }
+
+    #[test]
+    fn truncate_output_invalid_utf8_handled() {
+        // Invalid UTF-8 bytes should be handled with lossy conversion
+        let data = &[0xff, 0xfe, 0xfd, 0x48, 0x65, 0x6c, 0x6c, 0x6f];
+        let (text, truncated) = truncate_output(data, 100);
+        assert!(!truncated);
+        // Should contain lossy-converted output
+        assert!(text.contains("Hello"));
+    }
+
+    // ── SafeShellServer construction ───────────────────────────────
+
+    #[test]
+    fn server_new_default_config() {
+        let server = SafeShellServer::new(Config::default());
+        assert_eq!(server.config.default_timeout_seconds, 30);
+        assert_eq!(server.config.max_concurrency, 1);
+    }
+
+    #[test]
+    fn server_new_custom_config() {
+        let config = Config {
+            default_timeout_seconds: 60,
+            max_concurrency: 4,
+            max_output_bytes: 200_000,
+            additional_safe_commands: vec!["git".to_string()],
+            ..Config::default()
+        };
+        let server = SafeShellServer::new(config);
+        assert_eq!(server.config.default_timeout_seconds, 60);
+        assert_eq!(server.config.max_concurrency, 4);
+        assert_eq!(server.config.max_output_bytes, 200_000);
+    }
+
+    #[test]
+    fn server_concurrency_min_one() {
+        // max_concurrency of 0 should be coerced to at least 1
+        let config = Config {
+            max_concurrency: 0,
+            ..Config::default()
+        };
+        let server = SafeShellServer::new(config);
+        // The semaphore should allow at least one permit
+        assert!(server.concurrency.try_acquire().is_ok());
+    }
+
+    // ── ServerInfo ─────────────────────────────────────────────────
+
+    #[test]
+    fn server_info_has_correct_name() {
+        let server = SafeShellServer::new(Config::default());
+        let info = server.get_info();
+        assert_eq!(info.server_info.name, "safeshell-mcp");
+        assert!(info.server_info.title.is_some());
+        assert!(info.instructions.is_some());
+    }
+
+    #[test]
+    fn server_info_version_matches_cargo() {
+        let server = SafeShellServer::new(Config::default());
+        let info = server.get_info();
+        assert_eq!(info.server_info.version, env!("CARGO_PKG_VERSION"));
     }
 }
 

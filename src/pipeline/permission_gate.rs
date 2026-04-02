@@ -61,3 +61,59 @@ pub async fn gate(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn gate_decision_approved_equality() {
+        assert_eq!(GateDecision::Approved, GateDecision::Approved);
+    }
+
+    #[test]
+    fn gate_decision_denied_equality() {
+        let a = GateDecision::Denied {
+            reason: "test".into(),
+        };
+        let b = GateDecision::Denied {
+            reason: "test".into(),
+        };
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn gate_decision_approved_not_denied() {
+        let denied = GateDecision::Denied {
+            reason: "nope".into(),
+        };
+        assert_ne!(GateDecision::Approved, denied);
+    }
+
+    #[test]
+    fn gate_decision_denied_different_reasons() {
+        let a = GateDecision::Denied {
+            reason: "reason a".into(),
+        };
+        let b = GateDecision::Denied {
+            reason: "reason b".into(),
+        };
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn command_permission_serde_roundtrip() {
+        let perm = CommandPermission { approved: true };
+        let json = serde_json::to_string(&perm).unwrap();
+        let deser: CommandPermission = serde_json::from_str(&json).unwrap();
+        assert!(deser.approved);
+    }
+
+    #[test]
+    fn command_permission_false_roundtrip() {
+        let perm = CommandPermission { approved: false };
+        let json = serde_json::to_string(&perm).unwrap();
+        let deser: CommandPermission = serde_json::from_str(&json).unwrap();
+        assert!(!deser.approved);
+    }
+}

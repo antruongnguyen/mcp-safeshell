@@ -83,3 +83,151 @@ pub fn arch_name() -> &'static str {
 pub fn is_safe_command(cmd: &str) -> bool {
     safe_commands().iter().any(|sc| sc.name == cmd)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── os_name ────────────────────────────────────────────────────
+
+    #[test]
+    fn os_name_is_known() {
+        let name = os_name();
+        assert!(
+            ["macos", "linux", "windows"].contains(&name),
+            "unexpected os_name: {name}"
+        );
+    }
+
+    // ── arch_name ──────────────────────────────────────────────────
+
+    #[test]
+    fn arch_name_is_nonempty() {
+        let arch = arch_name();
+        assert!(!arch.is_empty());
+    }
+
+    // ── safe_commands ──────────────────────────────────────────────
+
+    #[test]
+    fn safe_commands_is_nonempty() {
+        assert!(!safe_commands().is_empty());
+    }
+
+    #[test]
+    fn safe_commands_have_names_and_descriptions() {
+        for sc in safe_commands() {
+            assert!(!sc.name.is_empty(), "safe command has empty name");
+            assert!(
+                !sc.description.is_empty(),
+                "safe command {} has empty description",
+                sc.name
+            );
+        }
+    }
+
+    #[test]
+    fn common_safe_commands_present() {
+        // These should be present on all platforms
+        assert!(is_safe_command("echo"));
+        assert!(is_safe_command("hostname"));
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn unix_safe_commands_present() {
+        assert!(is_safe_command("cat"));
+        assert!(is_safe_command("ls"));
+        assert!(is_safe_command("whoami"));
+        assert!(is_safe_command("pwd"));
+        assert!(is_safe_command("uname"));
+        assert!(is_safe_command("which"));
+        assert!(is_safe_command("printenv"));
+        assert!(is_safe_command("head"));
+        assert!(is_safe_command("tail"));
+        assert!(is_safe_command("wc"));
+        assert!(is_safe_command("df"));
+        assert!(is_safe_command("uptime"));
+        assert!(is_safe_command("date"));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_safe_commands_present() {
+        assert!(is_safe_command("dir"));
+        assert!(is_safe_command("type"));
+        assert!(is_safe_command("where"));
+        assert!(is_safe_command("ver"));
+        assert!(is_safe_command("set"));
+    }
+
+    #[test]
+    fn dangerous_commands_not_safe() {
+        assert!(!is_safe_command("rm"));
+        assert!(!is_safe_command("sudo"));
+        assert!(!is_safe_command("curl"));
+        assert!(!is_safe_command("bash"));
+        assert!(!is_safe_command("python"));
+    }
+
+    #[test]
+    fn unknown_command_not_safe() {
+        assert!(!is_safe_command("totally_unknown_command_xyz"));
+    }
+
+    // ── protected_paths ────────────────────────────────────────────
+
+    #[test]
+    fn protected_paths_is_nonempty() {
+        assert!(!protected_paths().is_empty());
+    }
+
+    #[test]
+    fn protected_paths_have_valid_fields() {
+        for pp in protected_paths() {
+            assert!(!pp.path.is_empty(), "protected path has empty path");
+            assert!(
+                !pp.reason.is_empty(),
+                "protected path {} has empty reason",
+                pp.path
+            );
+        }
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn etc_is_protected() {
+        let has_etc = protected_paths().iter().any(|pp| pp.path == "/etc");
+        assert!(has_etc, "/etc should be in the protected paths list");
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn usr_bin_is_protected() {
+        let has_usr_bin = protected_paths().iter().any(|pp| pp.path == "/usr/bin");
+        assert!(has_usr_bin, "/usr/bin should be in the protected paths list");
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn system_paths_read_allowed() {
+        // /etc, /usr/bin should have read_allowed=true
+        for pp in protected_paths() {
+            if pp.path == "/etc" || pp.path == "/usr/bin" {
+                assert!(
+                    pp.read_allowed,
+                    "{} should have read_allowed=true",
+                    pp.path
+                );
+            }
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_specific_paths() {
+        let paths: Vec<&str> = protected_paths().iter().map(|p| p.path).collect();
+        assert!(paths.contains(&"/System"));
+        assert!(paths.contains(&"/Library/LaunchDaemons"));
+    }
+}

@@ -217,38 +217,407 @@ mod tests {
         }
     }
 
+    // ── Safe commands ──────────────────────────────────────────────
+
     #[test]
-    fn test_safe_command() {
+    fn safe_echo() {
         assert_eq!(classify(&cmd("echo", &["hello"])), Classification::Safe);
+    }
+
+    #[test]
+    fn safe_ls() {
         assert_eq!(classify(&cmd("ls", &["-la"])), Classification::Safe);
     }
 
     #[test]
-    fn test_dangerous_rm() {
+    fn safe_cat() {
+        assert_eq!(classify(&cmd("cat", &["file.txt"])), Classification::Safe);
+    }
+
+    #[test]
+    fn safe_whoami() {
+        assert_eq!(classify(&cmd("whoami", &[])), Classification::Safe);
+    }
+
+    #[test]
+    fn safe_pwd() {
+        assert_eq!(classify(&cmd("pwd", &[])), Classification::Safe);
+    }
+
+    #[test]
+    fn safe_uname() {
+        assert_eq!(classify(&cmd("uname", &["-a"])), Classification::Safe);
+    }
+
+    #[test]
+    fn safe_hostname() {
+        assert_eq!(classify(&cmd("hostname", &[])), Classification::Safe);
+    }
+
+    #[test]
+    fn safe_which() {
+        assert_eq!(classify(&cmd("which", &["bash"])), Classification::Safe);
+    }
+
+    #[test]
+    fn safe_printenv() {
+        assert_eq!(classify(&cmd("printenv", &[])), Classification::Safe);
+    }
+
+    #[test]
+    fn safe_head() {
+        assert_eq!(classify(&cmd("head", &["-n", "10"])), Classification::Safe);
+    }
+
+    #[test]
+    fn safe_tail() {
+        assert_eq!(classify(&cmd("tail", &["-f"])), Classification::Safe);
+    }
+
+    #[test]
+    fn safe_wc() {
+        assert_eq!(classify(&cmd("wc", &["-l"])), Classification::Safe);
+    }
+
+    #[test]
+    fn safe_df() {
+        assert_eq!(classify(&cmd("df", &["-h"])), Classification::Safe);
+    }
+
+    #[test]
+    fn safe_uptime() {
+        assert_eq!(classify(&cmd("uptime", &[])), Classification::Safe);
+    }
+
+    #[test]
+    fn safe_date() {
+        assert_eq!(classify(&cmd("date", &[])), Classification::Safe);
+    }
+
+    // ── Privilege escalation (always dangerous) ────────────────────
+
+    #[test]
+    fn dangerous_sudo() {
+        let c = classify(&cmd("sudo", &["rm", "-rf", "/"]));
+        assert!(matches!(c, Classification::Dangerous { .. }));
+        if let Classification::Dangerous { reason } = c {
+            assert!(reason.contains("Privilege escalation"));
+        }
+    }
+
+    #[test]
+    fn dangerous_doas() {
         assert!(matches!(
-            classify(&cmd("rm", &["-rf", "/"])),
+            classify(&cmd("doas", &["ls"])),
             Classification::Dangerous { .. }
         ));
     }
 
     #[test]
-    fn test_dangerous_sudo() {
+    fn dangerous_su() {
         assert!(matches!(
-            classify(&cmd("sudo", &["rm", "-rf", "/"])),
+            classify(&cmd("su", &["-"])),
             Classification::Dangerous { .. }
         ));
     }
 
     #[test]
-    fn test_unknown_is_dangerous() {
+    fn dangerous_pkexec() {
         assert!(matches!(
-            classify(&cmd("my_custom_script", &[])),
+            classify(&cmd("pkexec", &["vim"])),
+            Classification::Dangerous { .. }
+        ));
+    }
+
+    // ── Destructive file operations ────────────────────────────────
+
+    #[test]
+    fn dangerous_rm() {
+        let c = classify(&cmd("rm", &["-rf", "/"]));
+        assert!(matches!(c, Classification::Dangerous { .. }));
+        if let Classification::Dangerous { reason } = c {
+            assert!(reason.contains("Destructive file operation"));
+        }
+    }
+
+    #[test]
+    fn dangerous_rmdir() {
+        assert!(matches!(
+            classify(&cmd("rmdir", &["/tmp/dir"])),
             Classification::Dangerous { .. }
         ));
     }
 
     #[test]
-    fn test_classify_all_mixed() {
+    fn dangerous_chmod() {
+        assert!(matches!(
+            classify(&cmd("chmod", &["777", "file"])),
+            Classification::Dangerous { .. }
+        ));
+    }
+
+    #[test]
+    fn dangerous_chown() {
+        assert!(matches!(
+            classify(&cmd("chown", &["root", "file"])),
+            Classification::Dangerous { .. }
+        ));
+    }
+
+    #[test]
+    fn dangerous_dd() {
+        assert!(matches!(
+            classify(&cmd("dd", &["if=/dev/zero", "of=/dev/sda"])),
+            Classification::Dangerous { .. }
+        ));
+    }
+
+    #[test]
+    fn dangerous_shred() {
+        assert!(matches!(
+            classify(&cmd("shred", &["file"])),
+            Classification::Dangerous { .. }
+        ));
+    }
+
+    #[test]
+    fn dangerous_truncate() {
+        assert!(matches!(
+            classify(&cmd("truncate", &["-s", "0", "file"])),
+            Classification::Dangerous { .. }
+        ));
+    }
+
+    // ── Network commands ───────────────────────────────────────────
+
+    #[test]
+    fn dangerous_curl() {
+        let c = classify(&cmd("curl", &["evil.com"]));
+        assert!(matches!(c, Classification::Dangerous { .. }));
+        if let Classification::Dangerous { reason } = c {
+            assert!(reason.contains("Network"));
+        }
+    }
+
+    #[test]
+    fn dangerous_wget() {
+        assert!(matches!(
+            classify(&cmd("wget", &["evil.com"])),
+            Classification::Dangerous { .. }
+        ));
+    }
+
+    #[test]
+    fn dangerous_nc() {
+        assert!(matches!(
+            classify(&cmd("nc", &["-l", "4444"])),
+            Classification::Dangerous { .. }
+        ));
+    }
+
+    #[test]
+    fn dangerous_ssh() {
+        assert!(matches!(
+            classify(&cmd("ssh", &["user@host"])),
+            Classification::Dangerous { .. }
+        ));
+    }
+
+    #[test]
+    fn dangerous_scp() {
+        assert!(matches!(
+            classify(&cmd("scp", &["file", "user@host:/path"])),
+            Classification::Dangerous { .. }
+        ));
+    }
+
+    #[test]
+    fn dangerous_rsync() {
+        assert!(matches!(
+            classify(&cmd("rsync", &["-avz", "src/", "dest/"])),
+            Classification::Dangerous { .. }
+        ));
+    }
+
+    // ── Package managers ───────────────────────────────────────────
+
+    #[test]
+    fn dangerous_apt() {
+        let c = classify(&cmd("apt", &["install", "vim"]));
+        assert!(matches!(c, Classification::Dangerous { .. }));
+        if let Classification::Dangerous { reason } = c {
+            assert!(reason.contains("Package manager"));
+        }
+    }
+
+    #[test]
+    fn dangerous_brew() {
+        assert!(matches!(
+            classify(&cmd("brew", &["install", "node"])),
+            Classification::Dangerous { .. }
+        ));
+    }
+
+    #[test]
+    fn dangerous_pip() {
+        assert!(matches!(
+            classify(&cmd("pip", &["install", "requests"])),
+            Classification::Dangerous { .. }
+        ));
+    }
+
+    #[test]
+    fn dangerous_npm() {
+        assert!(matches!(
+            classify(&cmd("npm", &["install"])),
+            Classification::Dangerous { .. }
+        ));
+    }
+
+    #[test]
+    fn dangerous_cargo() {
+        assert!(matches!(
+            classify(&cmd("cargo", &["build"])),
+            Classification::Dangerous { .. }
+        ));
+    }
+
+    // ── System control ─────────────────────────────────────────────
+
+    #[test]
+    fn dangerous_shutdown() {
+        let c = classify(&cmd("shutdown", &["-h", "now"]));
+        assert!(matches!(c, Classification::Dangerous { .. }));
+        if let Classification::Dangerous { reason } = c {
+            assert!(reason.contains("System control"));
+        }
+    }
+
+    #[test]
+    fn dangerous_kill() {
+        assert!(matches!(
+            classify(&cmd("kill", &["-9", "1234"])),
+            Classification::Dangerous { .. }
+        ));
+    }
+
+    #[test]
+    fn dangerous_systemctl() {
+        assert!(matches!(
+            classify(&cmd("systemctl", &["restart", "nginx"])),
+            Classification::Dangerous { .. }
+        ));
+    }
+
+    #[test]
+    fn dangerous_launchctl() {
+        assert!(matches!(
+            classify(&cmd("launchctl", &["load"])),
+            Classification::Dangerous { .. }
+        ));
+    }
+
+    // ── Disk/mount operations ──────────────────────────────────────
+
+    #[test]
+    fn dangerous_mount() {
+        let c = classify(&cmd("mount", &["/dev/sda1", "/mnt"]));
+        assert!(matches!(c, Classification::Dangerous { .. }));
+        if let Classification::Dangerous { reason } = c {
+            assert!(reason.contains("Disk"));
+        }
+    }
+
+    #[test]
+    fn dangerous_fdisk() {
+        assert!(matches!(
+            classify(&cmd("fdisk", &["/dev/sda"])),
+            Classification::Dangerous { .. }
+        ));
+    }
+
+    // ── Shell interpreters ─────────────────────────────────────────
+
+    #[test]
+    fn dangerous_bash() {
+        let c = classify(&cmd("bash", &["-c", "echo hi"]));
+        assert!(matches!(c, Classification::Dangerous { .. }));
+        if let Classification::Dangerous { reason } = c {
+            assert!(reason.contains("Shell/interpreter"));
+        }
+    }
+
+    #[test]
+    fn dangerous_sh() {
+        assert!(matches!(
+            classify(&cmd("sh", &["-c", "echo hi"])),
+            Classification::Dangerous { .. }
+        ));
+    }
+
+    #[test]
+    fn dangerous_python() {
+        assert!(matches!(
+            classify(&cmd("python", &["-c", "print('hi')"])),
+            Classification::Dangerous { .. }
+        ));
+    }
+
+    #[test]
+    fn dangerous_python3() {
+        assert!(matches!(
+            classify(&cmd("python3", &["script.py"])),
+            Classification::Dangerous { .. }
+        ));
+    }
+
+    #[test]
+    fn dangerous_node() {
+        assert!(matches!(
+            classify(&cmd("node", &["app.js"])),
+            Classification::Dangerous { .. }
+        ));
+    }
+
+    #[test]
+    fn dangerous_ruby() {
+        assert!(matches!(
+            classify(&cmd("ruby", &["-e", "puts 'hi'"])),
+            Classification::Dangerous { .. }
+        ));
+    }
+
+    #[test]
+    fn dangerous_perl() {
+        assert!(matches!(
+            classify(&cmd("perl", &["-e", "print 'hi'"])),
+            Classification::Dangerous { .. }
+        ));
+    }
+
+    // ── Unknown commands default to dangerous ──────────────────────
+
+    #[test]
+    fn unknown_is_dangerous() {
+        let c = classify(&cmd("my_custom_script", &[]));
+        assert!(matches!(c, Classification::Dangerous { .. }));
+        if let Classification::Dangerous { reason } = c {
+            assert!(reason.contains("not in the safe allowlist"));
+        }
+    }
+
+    #[test]
+    fn unknown_with_path_like_name() {
+        assert!(matches!(
+            classify(&cmd("./run.sh", &[])),
+            Classification::Dangerous { .. }
+        ));
+    }
+
+    // ── classify_all ───────────────────────────────────────────────
+
+    #[test]
+    fn classify_all_mixed_is_dangerous() {
         let cmds = vec![cmd("echo", &["hello"]), cmd("rm", &["-rf", "/tmp/x"])];
         assert!(matches!(
             classify_all(&cmds, &[]),
@@ -257,29 +626,48 @@ mod tests {
     }
 
     #[test]
-    fn test_classify_all_additional_safe() {
-        // "my_custom_script" is normally dangerous (not in allowlist)
+    fn classify_all_all_safe() {
+        let cmds = vec![cmd("echo", &["hello"]), cmd("ls", &["-la"])];
+        assert_eq!(classify_all(&cmds, &[]), Classification::Safe);
+    }
+
+    #[test]
+    fn classify_all_additional_safe_overrides() {
         let cmds = vec![cmd("my_custom_script", &["--flag"])];
         assert!(matches!(
             classify_all(&cmds, &[]),
             Classification::Dangerous { .. }
         ));
 
-        // But if it's in additional_safe, the chain becomes safe
         let additional = vec!["my_custom_script".to_string()];
         assert_eq!(classify_all(&cmds, &additional), Classification::Safe);
     }
 
     #[test]
-    fn test_classify_all_all_safe() {
-        let cmds = vec![cmd("echo", &["hello"]), cmd("ls", &["-la"])];
+    fn classify_all_empty_commands() {
+        let cmds: Vec<ParsedCommand> = Vec::new();
         assert_eq!(classify_all(&cmds, &[]), Classification::Safe);
     }
 
-    // ── Chain analysis tests ──
+    #[test]
+    fn classify_all_single_safe() {
+        let cmds = vec![cmd("whoami", &[])];
+        assert_eq!(classify_all(&cmds, &[]), Classification::Safe);
+    }
 
     #[test]
-    fn test_chain_classification_details() {
+    fn classify_all_single_dangerous() {
+        let cmds = vec![cmd("rm", &["-rf", "/"])];
+        assert!(matches!(
+            classify_all(&cmds, &[]),
+            Classification::Dangerous { .. }
+        ));
+    }
+
+    // ── classify_chain details ─────────────────────────────────────
+
+    #[test]
+    fn chain_classification_details() {
         let cmds = vec![
             cmd("echo", &["hello"]),
             cmd("rm", &["-rf", "/tmp/x"]),
@@ -291,15 +679,10 @@ mod tests {
         assert!(matches!(result.aggregate, Classification::Dangerous { .. }));
         assert_eq!(result.details.len(), 3);
 
-        // echo is safe
         assert_eq!(result.details[0].command, "echo");
         assert_eq!(result.details[0].index, 0);
-        assert!(matches!(
-            result.details[0].classification,
-            Classification::Safe
-        ));
+        assert!(matches!(result.details[0].classification, Classification::Safe));
 
-        // rm is dangerous
         assert_eq!(result.details[1].command, "rm");
         assert_eq!(result.details[1].index, 1);
         assert!(matches!(
@@ -307,17 +690,13 @@ mod tests {
             Classification::Dangerous { .. }
         ));
 
-        // ls is safe
         assert_eq!(result.details[2].command, "ls");
         assert_eq!(result.details[2].index, 2);
-        assert!(matches!(
-            result.details[2].classification,
-            Classification::Safe
-        ));
+        assert!(matches!(result.details[2].classification, Classification::Safe));
     }
 
     #[test]
-    fn test_chain_all_safe() {
+    fn chain_all_safe() {
         let cmds = vec![cmd("echo", &["a"]), cmd("ls", &["-la"]), cmd("cat", &["f"])];
         let result = classify_chain(&cmds, &[], true);
 
@@ -331,7 +710,7 @@ mod tests {
     }
 
     #[test]
-    fn test_chain_multiple_dangerous() {
+    fn chain_multiple_dangerous() {
         let cmds = vec![
             cmd("rm", &["-rf", "/"]),
             cmd("curl", &["evil.com"]),
@@ -341,7 +720,6 @@ mod tests {
 
         assert!(matches!(result.aggregate, Classification::Dangerous { .. }));
 
-        // Both rm and curl should be dangerous
         let dangerous_count = result
             .details
             .iter()
@@ -351,13 +729,12 @@ mod tests {
     }
 
     #[test]
-    fn test_chain_additional_safe_override() {
+    fn chain_additional_safe_override() {
         let cmds = vec![cmd("echo", &["hello"]), cmd("my_tool", &["--flag"])];
         let additional = vec!["my_tool".to_string()];
         let result = classify_chain(&cmds, &additional, true);
 
         assert!(matches!(result.aggregate, Classification::Safe));
-        // my_tool should be classified as safe after override
         assert!(matches!(
             result.details[1].classification,
             Classification::Safe
@@ -365,11 +742,10 @@ mod tests {
     }
 
     #[test]
-    fn test_chain_reason_includes_index() {
+    fn chain_reason_includes_index() {
         let cmds = vec![cmd("echo", &["hello"]), cmd("rm", &["-rf", "/"])];
         let result = classify_chain(&cmds, &[], true);
         if let Classification::Dangerous { reason } = &result.aggregate {
-            // Reason should reference command index
             assert!(reason.contains("[2]"));
             assert!(reason.contains("rm"));
         } else {
@@ -378,10 +754,50 @@ mod tests {
     }
 
     #[test]
-    fn test_single_command_not_chained() {
+    fn chain_multiple_dangerous_reason_semicolon_separated() {
+        let cmds = vec![cmd("rm", &["file"]), cmd("curl", &["evil.com"])];
+        let result = classify_chain(&cmds, &[], true);
+        if let Classification::Dangerous { reason } = &result.aggregate {
+            assert!(reason.contains("; "));
+            assert!(reason.contains("[1]"));
+            assert!(reason.contains("[2]"));
+        } else {
+            panic!("Expected dangerous classification");
+        }
+    }
+
+    #[test]
+    fn single_command_not_chained() {
         let cmds = vec![cmd("echo", &["hello"])];
         let result = classify_chain(&cmds, &[], false);
         assert!(!result.is_chained);
         assert_eq!(result.details.len(), 1);
+    }
+
+    #[test]
+    fn additional_safe_does_not_override_all_dangerous() {
+        // If only one of two dangerous commands is in additional_safe,
+        // the chain should still be dangerous
+        let cmds = vec![cmd("curl", &["url"]), cmd("rm", &["file"])];
+        let additional = vec!["curl".to_string()];
+        let result = classify_chain(&cmds, &additional, true);
+        assert!(matches!(result.aggregate, Classification::Dangerous { .. }));
+        // curl should now be safe
+        assert!(matches!(
+            result.details[0].classification,
+            Classification::Safe
+        ));
+        // rm should still be dangerous
+        assert!(matches!(
+            result.details[1].classification,
+            Classification::Dangerous { .. }
+        ));
+    }
+
+    #[test]
+    fn raw_preserved_in_detail() {
+        let cmds = vec![cmd("echo", &["hello", "world"])];
+        let result = classify_chain(&cmds, &[], false);
+        assert_eq!(result.details[0].raw, "echo hello world");
     }
 }
