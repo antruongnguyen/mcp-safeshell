@@ -364,10 +364,7 @@ mod tests {
             config.additional_safe_commands,
             vec!["git", "make", "cargo"]
         );
-        assert_eq!(
-            config.redact_env_patterns,
-            vec!["(?i)SECRET", "TOKEN_.*"]
-        );
+        assert_eq!(config.redact_env_patterns, vec!["(?i)SECRET", "TOKEN_.*"]);
     }
 
     #[test]
