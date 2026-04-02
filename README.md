@@ -287,7 +287,7 @@ read_allowed = false
 | `default_timeout_seconds` | `30` | Max execution time per command |
 | `max_output_bytes` | `102400` (100 KB) | Max bytes per output stream before truncation |
 | `max_concurrency` | `1` | Max simultaneous command executions |
-| `additional_safe_commands` | `[]` | Extra commands to treat as safe |
+| `additional_safe_commands` | `[]` | Extra commands to treat as safe (inherently dangerous commands like `rm`, `sudo`, `curl` cannot be overridden; a warning is logged if attempted) |
 | `additional_protected_paths` | `[]` | Extra directories to protect |
 | `redact_env_patterns` | `[]` | Extra regex patterns for sensitive env var names |
 | `shell` | auto-detect | Shell binary for execution |
@@ -309,7 +309,7 @@ Individual config fields can be overridden via `SAFESHELL_*` environment variabl
 | `SAFESHELL_HTTP_BIND` | `http_bind` | HTTP listen address |
 | `SAFESHELL_LOG_LEVEL` | `log_level` | Log filter string |
 | `SAFESHELL_LOG_FILE` | `log_file` | Log file path |
-| `SAFESHELL_SAFE_COMMANDS` | `additional_safe_commands` | Comma-separated list of additional safe commands |
+| `SAFESHELL_SAFE_COMMANDS` | `additional_safe_commands` | Comma-separated list of additional safe commands (inherently dangerous commands cannot be overridden) |
 | `SAFESHELL_REDACT_PATTERNS` | `redact_env_patterns` | Comma-separated list of regex patterns for env var redaction |
 | `RUST_LOG` | — | Log level filter (overridden by `log_level` / `SAFESHELL_LOG_LEVEL`) |
 | `SHELL` (Unix) | — | Default shell when `shell` is not set |

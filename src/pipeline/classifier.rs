@@ -40,6 +40,79 @@ pub struct ChainClassification {
     pub is_chained: bool,
 }
 
+/// Returns `true` if the command name belongs to a hardcoded always-dangerous
+/// category (privilege escalation, destructive file ops, network, package
+/// managers, system control, disk ops, shell interpreters).
+///
+/// These commands must NEVER be overridden by `additional_safe_commands`.
+pub fn is_always_dangerous(name: &str) -> bool {
+    // Privilege escalation
+    if matches!(name, "sudo" | "doas" | "su" | "runas" | "pkexec") {
+        return true;
+    }
+    // Destructive file operations
+    if matches!(
+        name,
+        "rm" | "rmdir" | "chmod" | "chown" | "chgrp" | "mkfs" | "dd" | "shred" | "truncate"
+    ) {
+        return true;
+    }
+    // Network commands
+    if matches!(
+        name,
+        "curl" | "wget" | "nc" | "ncat" | "netcat" | "ssh" | "scp" | "sftp" | "rsync" | "ftp"
+    ) {
+        return true;
+    }
+    // Package managers
+    if matches!(
+        name,
+        "apt" | "apt-get" | "yum" | "dnf" | "pacman" | "brew" | "choco" | "pip" | "npm" | "cargo"
+    ) {
+        return true;
+    }
+    // System control
+    if matches!(
+        name,
+        "shutdown"
+            | "reboot"
+            | "halt"
+            | "poweroff"
+            | "init"
+            | "systemctl"
+            | "launchctl"
+            | "kill"
+            | "killall"
+            | "pkill"
+    ) {
+        return true;
+    }
+    // Disk/mount operations
+    if matches!(name, "mount" | "umount" | "fdisk" | "parted" | "lvm") {
+        return true;
+    }
+    // Shell interpreters
+    if matches!(
+        name,
+        "bash"
+            | "sh"
+            | "zsh"
+            | "fish"
+            | "csh"
+            | "tcsh"
+            | "dash"
+            | "ksh"
+            | "python"
+            | "python3"
+            | "perl"
+            | "ruby"
+            | "node"
+    ) {
+        return true;
+    }
+    false
+}
+
 /// Classify a parsed command.
 pub fn classify(cmd: &ParsedCommand) -> Classification {
     let name = cmd.command.as_str();
@@ -159,11 +232,19 @@ pub fn classify_chain(
     for (index, cmd) in cmds.iter().enumerate() {
         let mut classification = classify(cmd);
 
-        // Override if command is in the additional safe list
+        // Override if command is in the additional safe list, but NEVER
+        // override commands that are inherently always-dangerous.
         if matches!(classification, Classification::Dangerous { .. })
             && additional_safe.iter().any(|s| s == &cmd.command)
         {
-            classification = Classification::Safe;
+            if is_always_dangerous(&cmd.command) {
+                tracing::warn!(
+                    command = %cmd.command,
+                    "ignoring additional_safe_commands override for inherently dangerous command"
+                );
+            } else {
+                classification = Classification::Safe;
+            }
         }
 
         if let Classification::Dangerous { ref reason } = classification {
@@ -782,18 +863,18 @@ mod tests {
 
     #[test]
     fn additional_safe_does_not_override_all_dangerous() {
-        // If only one of two dangerous commands is in additional_safe,
-        // the chain should still be dangerous
+        // Even when both dangerous commands are in additional_safe, always-dangerous
+        // commands (curl, rm) cannot be overridden
         let cmds = vec![cmd("curl", &["url"]), cmd("rm", &["file"])];
-        let additional = vec!["curl".to_string()];
+        let additional = vec!["curl".to_string(), "rm".to_string()];
         let result = classify_chain(&cmds, &additional, true);
         assert!(matches!(result.aggregate, Classification::Dangerous { .. }));
-        // curl should now be safe
+        // curl is always-dangerous — must stay dangerous
         assert!(matches!(
             result.details[0].classification,
-            Classification::Safe
+            Classification::Dangerous { .. }
         ));
-        // rm should still be dangerous
+        // rm is always-dangerous — must stay dangerous
         assert!(matches!(
             result.details[1].classification,
             Classification::Dangerous { .. }
@@ -805,5 +886,134 @@ mod tests {
         let cmds = vec![cmd("echo", &["hello", "world"])];
         let result = classify_chain(&cmds, &[], false);
         assert_eq!(result.details[0].raw, "echo hello world");
+    }
+
+    // ── Always-dangerous commands cannot be overridden ─────────────
+
+    #[test]
+    fn always_dangerous_rm_not_overridable() {
+        let cmds = vec![cmd("rm", &["-rf", "/tmp/x"])];
+        let additional = vec!["rm".to_string()];
+        let result = classify_chain(&cmds, &additional, false);
+        assert!(matches!(result.aggregate, Classification::Dangerous { .. }));
+    }
+
+    #[test]
+    fn always_dangerous_sudo_not_overridable() {
+        let cmds = vec![cmd("sudo", &["ls"])];
+        let additional = vec!["sudo".to_string()];
+        let result = classify_chain(&cmds, &additional, false);
+        assert!(matches!(result.aggregate, Classification::Dangerous { .. }));
+    }
+
+    #[test]
+    fn always_dangerous_curl_not_overridable() {
+        let cmds = vec![cmd("curl", &["example.com"])];
+        let additional = vec!["curl".to_string()];
+        let result = classify_chain(&cmds, &additional, false);
+        assert!(matches!(result.aggregate, Classification::Dangerous { .. }));
+    }
+
+    #[test]
+    fn always_dangerous_kill_not_overridable() {
+        let cmds = vec![cmd("kill", &["-9", "1234"])];
+        let additional = vec!["kill".to_string()];
+        let result = classify_chain(&cmds, &additional, false);
+        assert!(matches!(result.aggregate, Classification::Dangerous { .. }));
+    }
+
+    #[test]
+    fn always_dangerous_bash_not_overridable() {
+        let cmds = vec![cmd("bash", &["-c", "echo hi"])];
+        let additional = vec!["bash".to_string()];
+        let result = classify_chain(&cmds, &additional, false);
+        assert!(matches!(result.aggregate, Classification::Dangerous { .. }));
+    }
+
+    #[test]
+    fn always_dangerous_npm_not_overridable() {
+        let cmds = vec![cmd("npm", &["install"])];
+        let additional = vec!["npm".to_string()];
+        let result = classify_chain(&cmds, &additional, false);
+        assert!(matches!(result.aggregate, Classification::Dangerous { .. }));
+    }
+
+    #[test]
+    fn always_dangerous_mount_not_overridable() {
+        let cmds = vec![cmd("mount", &["/dev/sda1", "/mnt"])];
+        let additional = vec!["mount".to_string()];
+        let result = classify_chain(&cmds, &additional, false);
+        assert!(matches!(result.aggregate, Classification::Dangerous { .. }));
+    }
+
+    #[test]
+    fn not_in_allowlist_still_overridable() {
+        // Custom unknown commands should still be overridable
+        let cmds = vec![cmd("my_custom_tool", &["--flag"])];
+        let additional = vec!["my_custom_tool".to_string()];
+        let result = classify_chain(&cmds, &additional, false);
+        assert!(matches!(result.aggregate, Classification::Safe));
+    }
+
+    #[test]
+    fn mixed_always_dangerous_and_overridable() {
+        // Chain with one always-dangerous (rm) and one overridable unknown command
+        let cmds = vec![cmd("my_tool", &[]), cmd("rm", &["file"])];
+        let additional = vec!["my_tool".to_string(), "rm".to_string()];
+        let result = classify_chain(&cmds, &additional, true);
+        // my_tool gets overridden to safe
+        assert!(matches!(
+            result.details[0].classification,
+            Classification::Safe
+        ));
+        // rm stays dangerous
+        assert!(matches!(
+            result.details[1].classification,
+            Classification::Dangerous { .. }
+        ));
+        // aggregate is dangerous
+        assert!(matches!(result.aggregate, Classification::Dangerous { .. }));
+    }
+
+    // ── is_always_dangerous ───────────────────────────────────────
+
+    #[test]
+    fn is_always_dangerous_covers_all_categories() {
+        // Privilege escalation
+        assert!(is_always_dangerous("sudo"));
+        assert!(is_always_dangerous("doas"));
+        assert!(is_always_dangerous("su"));
+        // Destructive file ops
+        assert!(is_always_dangerous("rm"));
+        assert!(is_always_dangerous("dd"));
+        assert!(is_always_dangerous("shred"));
+        // Network
+        assert!(is_always_dangerous("curl"));
+        assert!(is_always_dangerous("wget"));
+        assert!(is_always_dangerous("ssh"));
+        // Package managers
+        assert!(is_always_dangerous("apt"));
+        assert!(is_always_dangerous("brew"));
+        assert!(is_always_dangerous("cargo"));
+        // System control
+        assert!(is_always_dangerous("shutdown"));
+        assert!(is_always_dangerous("kill"));
+        assert!(is_always_dangerous("systemctl"));
+        // Disk ops
+        assert!(is_always_dangerous("mount"));
+        assert!(is_always_dangerous("fdisk"));
+        // Shell interpreters
+        assert!(is_always_dangerous("bash"));
+        assert!(is_always_dangerous("python3"));
+        assert!(is_always_dangerous("node"));
+    }
+
+    #[test]
+    fn is_always_dangerous_false_for_safe_and_unknown() {
+        assert!(!is_always_dangerous("echo"));
+        assert!(!is_always_dangerous("ls"));
+        assert!(!is_always_dangerous("cat"));
+        assert!(!is_always_dangerous("my_custom_tool"));
+        assert!(!is_always_dangerous("git"));
     }
 }
