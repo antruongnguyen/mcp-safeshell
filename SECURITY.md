@@ -229,7 +229,7 @@ If you discover a security vulnerability in SafeShell, please report it responsi
 
 | Version | Supported |
 |---------|-----------|
-| 0.1.x   | Yes (current) |
+| 1.0.x   | Yes (current) |
 
 Only the latest release receives security patches. We recommend always running the latest version.
 
