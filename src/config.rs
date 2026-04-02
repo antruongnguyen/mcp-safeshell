@@ -32,6 +32,8 @@ pub struct Config {
     pub http_bind: Option<String>,
     /// Log level filter string.
     pub log_level: Option<String>,
+    /// Path to a log file. When set, logs are also written here.
+    pub log_file: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -53,6 +55,7 @@ impl Default for Config {
             shell: None,
             http_bind: None,
             log_level: None,
+            log_file: None,
         }
     }
 }
@@ -103,6 +106,12 @@ mod tests {
         assert_eq!(c.max_output_bytes, 100 * 1024);
         assert_eq!(c.max_concurrency, 1);
         assert!(c.additional_safe_commands.is_empty());
+        assert!(c.additional_protected_paths.is_empty());
+        assert!(c.redact_env_patterns.is_empty());
+        assert!(c.shell.is_none());
+        assert!(c.http_bind.is_none());
+        assert!(c.log_level.is_none());
+        assert!(c.log_file.is_none());
     }
 
     #[test]
@@ -114,8 +123,8 @@ mod tests {
         let config: Config = toml::from_str(toml_str).unwrap();
         assert_eq!(config.default_timeout_seconds, 60);
         assert_eq!(config.max_output_bytes, 200_000);
-        // defaults for unset fields
         assert_eq!(config.max_concurrency, 1);
+        assert!(config.shell.is_none());
     }
 
     #[test]
@@ -129,6 +138,7 @@ mod tests {
             shell = "/bin/bash"
             http_bind = "0.0.0.0:8080"
             log_level = "debug"
+            log_file = "/var/log/safeshell.log"
 
             [[additional_protected_paths]]
             path = "/my/secret"
@@ -141,11 +151,67 @@ mod tests {
         assert_eq!(config.additional_protected_paths[0].path, "/my/secret");
         assert!(!config.additional_protected_paths[0].read_allowed);
         assert_eq!(config.shell.as_deref(), Some("/bin/bash"));
+        assert_eq!(config.http_bind.as_deref(), Some("0.0.0.0:8080"));
+        assert_eq!(config.log_level.as_deref(), Some("debug"));
+        assert_eq!(config.log_file.as_deref(), Some("/var/log/safeshell.log"));
+    }
+
+    #[test]
+    fn parse_empty_toml() {
+        let config: Config = toml::from_str("").unwrap();
+        assert_eq!(config.default_timeout_seconds, 30);
+        assert_eq!(config.max_output_bytes, 100 * 1024);
+    }
+
+    #[test]
+    fn parse_multiple_protected_paths() {
+        let toml_str = r#"
+            [[additional_protected_paths]]
+            path = "/data/prod"
+            read_allowed = true
+
+            [[additional_protected_paths]]
+            path = "/secrets"
+            read_allowed = false
+        "#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.additional_protected_paths.len(), 2);
+        assert!(config.additional_protected_paths[0].read_allowed);
+        assert!(!config.additional_protected_paths[1].read_allowed);
+    }
+
+    #[test]
+    fn protected_path_read_allowed_defaults_false() {
+        let toml_str = r#"
+            [[additional_protected_paths]]
+            path = "/no-read-allowed-field"
+        "#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert!(!config.additional_protected_paths[0].read_allowed);
+    }
+
+    #[test]
+    fn parse_multiple_safe_commands() {
+        let toml_str = r#"
+            additional_safe_commands = ["git", "make", "just", "nx", "pnpm"]
+        "#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.additional_safe_commands.len(), 5);
+        assert!(config.additional_safe_commands.contains(&"git".to_string()));
+        assert!(config.additional_safe_commands.contains(&"pnpm".to_string()));
+    }
+
+    #[test]
+    fn parse_multiple_redact_patterns() {
+        let toml_str = r#"
+            redact_env_patterns = ["(?i)MY_.*", "CUSTOM_TOKEN"]
+        "#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.redact_env_patterns.len(), 2);
     }
 
     #[test]
     fn load_returns_default_when_no_file() {
-        // Ensure no config file interferes
         let prev = std::env::var("SAFESHELL_CONFIG").ok();
         unsafe { std::env::set_var("SAFESHELL_CONFIG", "/nonexistent/path/safeshell.toml") };
         let config = Config::load();
@@ -155,5 +221,22 @@ mod tests {
         } else {
             unsafe { std::env::remove_var("SAFESHELL_CONFIG") };
         }
+    }
+
+    #[test]
+    fn try_load_nonexistent_returns_none() {
+        assert!(Config::try_load(Path::new("/nonexistent/safeshell.toml")).is_none());
+    }
+
+    #[test]
+    fn invalid_toml_returns_none() {
+        use std::io::Write;
+        let dir = std::env::temp_dir().join("safeshell_test_invalid");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("invalid.toml");
+        let mut f = std::fs::File::create(&path).unwrap();
+        writeln!(f, "this is not [valid toml {{{{").unwrap();
+        assert!(Config::try_load(&path).is_none());
+        let _ = std::fs::remove_file(&path);
     }
 }

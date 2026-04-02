@@ -6,12 +6,13 @@ mod server;
 
 use std::env;
 use std::net::SocketAddr;
+use std::path::Path;
 
 use rmcp::ServiceExt;
 use rmcp::transport::StreamableHttpServerConfig;
 use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
 use rmcp::transport::streamable_http_server::tower::StreamableHttpService;
-use tracing_subscriber::{EnvFilter, fmt};
+use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -25,12 +26,42 @@ async fn main() -> anyhow::Result<()> {
             EnvFilter::from_default_env().add_directive(tracing::Level::INFO.into())
         });
 
-    fmt()
-        .with_env_filter(log_filter)
+    let stderr_layer = fmt::layer()
         .with_target(true)
         .json()
-        .with_writer(std::io::stderr)
-        .init();
+        .with_writer(std::io::stderr);
+
+    // Optional log file layer — non-blocking append via tracing-appender.
+    let _file_guard;
+    if let Some(ref log_path) = config.log_file {
+        let path = Path::new(log_path);
+        let dir = path.parent().unwrap_or(Path::new("."));
+        let filename = path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
+        let file_appender = tracing_appender::rolling::never(dir, filename);
+        let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
+        _file_guard = Some(guard);
+
+        let file_layer = fmt::layer()
+            .with_target(true)
+            .json()
+            .with_writer(non_blocking);
+
+        tracing_subscriber::registry()
+            .with(log_filter)
+            .with(stderr_layer)
+            .with(file_layer)
+            .init();
+    } else {
+        _file_guard = None;
+        tracing_subscriber::registry()
+            .with(log_filter)
+            .with(stderr_layer)
+            .init();
+    }
 
     let transport_arg = env::args().nth(1).unwrap_or_default();
 

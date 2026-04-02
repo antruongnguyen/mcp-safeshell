@@ -1,0 +1,45 @@
+# SafeShell MCP Server — example configuration
+#
+# Place this file at one of the following locations (searched in order):
+#   1. Path in $SAFESHELL_CONFIG environment variable
+#   2. ./safeshell.toml          (current working directory)
+#   3. ~/.config/safeshell/config.toml
+#
+# All fields are optional; defaults shown below.
+
+# Default command timeout in seconds.
+default_timeout_seconds = 30
+
+# Maximum output size in bytes per stream (stdout / stderr each).
+max_output_bytes = 102400
+
+# Maximum concurrent command executions.
+max_concurrency = 1
+
+# Commands to add to the built-in safe-command allowlist.
+additional_safe_commands = []
+
+# Regex patterns for env-var names whose values should be redacted from output.
+# Built-in patterns already cover SECRET, PASSWORD, TOKEN, API_KEY, etc.
+redact_env_patterns = []
+
+# Override the shell used for execution.
+# If unset, auto-detects via $SHELL then falls back to /bin/sh (Unix) or cmd.exe (Windows).
+# shell = "/bin/bash"
+
+# HTTP bind address when running with `--transport http`.
+# http_bind = "127.0.0.1:3456"
+
+# Log level filter (e.g. "debug", "info", "warn", "safeshell_mcp=debug").
+# log_level = "info"
+
+# Path to an additional log file. Logs are always written to stderr;
+# when this is set they are also appended to the given file.
+# log_file = "/var/log/safeshell.log"
+
+# Additional protected paths. Each entry specifies a path and whether
+# read-only access is allowed (write/delete is always blocked).
+#
+# [[additional_protected_paths]]
+# path = "/my/secret/data"
+# read_allowed = false
