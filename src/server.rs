@@ -543,6 +543,13 @@ fn shell_with_flag(shell: &str) -> (String, String) {
     }
 }
 
+fn truncate_output(raw: &[u8], max_bytes: usize) -> (String, bool) {
+    let truncated = raw.len() > max_bytes;
+    let bytes = if truncated { &raw[..max_bytes] } else { raw };
+    let text = String::from_utf8_lossy(bytes).into_owned();
+    (text, truncated)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -652,8 +659,10 @@ mod tests {
 
     #[test]
     fn resolve_shell_config_override() {
-        let mut config = Config::default();
-        config.shell = Some("/usr/local/bin/bash".to_string());
+        let config = Config {
+            shell: Some("/usr/local/bin/bash".to_string()),
+            ..Config::default()
+        };
         let (shell, flag) = resolve_shell(&config);
         assert_eq!(shell, "/usr/local/bin/bash");
         assert_eq!(flag, "-c");
@@ -661,8 +670,10 @@ mod tests {
 
     #[test]
     fn resolve_shell_config_powershell_override() {
-        let mut config = Config::default();
-        config.shell = Some("pwsh".to_string());
+        let config = Config {
+            shell: Some("pwsh".to_string()),
+            ..Config::default()
+        };
         let (shell, flag) = resolve_shell(&config);
         assert_eq!(shell, "pwsh");
         assert_eq!(flag, "-Command");
@@ -670,8 +681,10 @@ mod tests {
 
     #[test]
     fn resolve_shell_config_cmd_override() {
-        let mut config = Config::default();
-        config.shell = Some("cmd.exe".to_string());
+        let config = Config {
+            shell: Some("cmd.exe".to_string()),
+            ..Config::default()
+        };
         let (shell, flag) = resolve_shell(&config);
         assert_eq!(shell, "cmd.exe");
         assert_eq!(flag, "/C");
@@ -794,11 +807,4 @@ mod tests {
         let info = server.get_info();
         assert_eq!(info.server_info.version, env!("CARGO_PKG_VERSION"));
     }
-}
-
-fn truncate_output(raw: &[u8], max_bytes: usize) -> (String, bool) {
-    let truncated = raw.len() > max_bytes;
-    let bytes = if truncated { &raw[..max_bytes] } else { raw };
-    let text = String::from_utf8_lossy(bytes).into_owned();
-    (text, truncated)
 }
