@@ -354,6 +354,76 @@ Invalid numeric values (for `SAFESHELL_TIMEOUT`, `SAFESHELL_MAX_OUTPUT`, `SAFESH
 }
 ```
 
+### Recommended safe command profiles
+
+Pre-defined `SAFESHELL_SAFE_COMMANDS` values for common use cases. These whitelist Tier 2 dangerous commands appropriate for each role — Tier 1 catastrophic commands (`sudo`, `dd`, `mkfs`, `shutdown`, etc.) are always blocked regardless of configuration.
+
+**Developer** — build tools, package managers, interpreters:
+
+```bash
+SAFESHELL_SAFE_COMMANDS="cargo,npm,pip,python3,node,bash,sh,curl,wget,rm,chmod,kill"
+```
+
+```toml
+# safeshell.toml
+additional_safe_commands = ["cargo", "npm", "pip", "python3", "node", "bash", "sh", "curl", "wget", "rm", "chmod", "kill"]
+```
+
+**DevOps / SRE** — developer commands plus system management:
+
+```bash
+SAFESHELL_SAFE_COMMANDS="cargo,npm,pip,python3,node,bash,sh,curl,wget,rm,chmod,chown,kill,killall,pkill,systemctl,launchctl,mount,umount,apt,apt-get,brew,rsync,ssh,scp"
+```
+
+```toml
+# safeshell.toml
+additional_safe_commands = [
+  "cargo", "npm", "pip", "python3", "node", "bash", "sh",
+  "curl", "wget", "rm", "chmod", "chown",
+  "kill", "killall", "pkill", "systemctl", "launchctl",
+  "mount", "umount", "apt", "apt-get", "brew",
+  "rsync", "ssh", "scp",
+]
+```
+
+**Restrictive** — minimal whitelist for untrusted environments:
+
+```bash
+SAFESHELL_SAFE_COMMANDS="npm,cargo,pip"
+```
+
+```toml
+# safeshell.toml
+additional_safe_commands = ["npm", "cargo", "pip"]
+```
+
+### Recommended redact patterns
+
+The built-in redaction patterns cover common sensitive variable names (`SECRET`, `PASSWORD`, `TOKEN`, `API_KEY`, `AUTH`, etc.). Add custom patterns via `SAFESHELL_REDACT_PATTERNS` or `redact_env_patterns` for your organization's naming conventions.
+
+**Common additions:**
+
+```bash
+SAFESHELL_REDACT_PATTERNS="(?i).*KEY.*,(?i).*TOKEN.*,(?i).*AUTH.*,(?i).*CERT.*,(?i).*SIGNING.*"
+```
+
+```toml
+# safeshell.toml
+redact_env_patterns = [
+  "(?i).*KEY.*",       # Matches: AWS_KEY, SIGNING_KEY, MY_API_KEY_V2, etc.
+  "(?i).*TOKEN.*",     # Matches: GITHUB_TOKEN, REFRESH_TOKEN, etc.
+  "(?i).*AUTH.*",      # Matches: OAUTH_SECRET, AUTH_HEADER, etc.
+  "(?i).*CERT.*",      # Matches: TLS_CERT, CLIENT_CERT_PATH, etc.
+  "(?i).*SIGNING.*",   # Matches: SIGNING_SECRET, JWT_SIGNING_KEY, etc.
+]
+```
+
+**Enterprise / compliance-heavy environments:**
+
+```bash
+SAFESHELL_REDACT_PATTERNS="(?i).*KEY.*,(?i).*TOKEN.*,(?i).*AUTH.*,(?i).*CERT.*,(?i).*SIGNING.*,(?i).*ENCRYPT.*,(?i).*PRIVATE.*,(?i).*WEBHOOK.*,(?i).*DSN.*,(?i).*SENTRY.*"
+```
+
 ### Shell auto-detection
 
 When `shell` is not set in config:
