@@ -62,6 +62,9 @@ impl Default for Config {
 
 impl Config {
     /// Load config from well-known paths, falling back to defaults.
+    ///
+    /// After loading from file (or defaults), environment variables with the
+    /// `SAFESHELL_` prefix override individual fields. See [`apply_env_overrides`].
     pub fn load() -> Self {
         let candidates: Vec<PathBuf> = [
             std::env::var("SAFESHELL_CONFIG").ok().map(PathBuf::from),
@@ -72,15 +75,92 @@ impl Config {
         .flatten()
         .collect();
 
+        let mut config = None;
         for path in &candidates {
-            if let Some(config) = Self::try_load(path) {
+            if let Some(c) = Self::try_load(path) {
                 tracing::info!(?path, "loaded configuration");
-                return config;
+                config = Some(c);
+                break;
             }
         }
 
-        tracing::debug!("no config file found, using defaults");
-        Self::default()
+        let mut config = config.unwrap_or_else(|| {
+            tracing::debug!("no config file found, using defaults");
+            Self::default()
+        });
+        config.apply_env_overrides();
+        config
+    }
+
+    /// Override config fields from `SAFESHELL_*` environment variables.
+    ///
+    /// Mapping:
+    /// - `SAFESHELL_TIMEOUT`         → `default_timeout_seconds`
+    /// - `SAFESHELL_MAX_OUTPUT`      → `max_output_bytes`
+    /// - `SAFESHELL_MAX_CONCURRENCY` → `max_concurrency`
+    /// - `SAFESHELL_SHELL`           → `shell`
+    /// - `SAFESHELL_HTTP_BIND`       → `http_bind`
+    /// - `SAFESHELL_LOG_LEVEL`       → `log_level`
+    /// - `SAFESHELL_LOG_FILE`        → `log_file`
+    /// - `SAFESHELL_SAFE_COMMANDS`   → `additional_safe_commands` (comma-separated)
+    /// - `SAFESHELL_REDACT_PATTERNS` → `redact_env_patterns` (comma-separated)
+    fn apply_env_overrides(&mut self) {
+        if let Ok(val) = std::env::var("SAFESHELL_TIMEOUT") {
+            if let Ok(v) = val.parse::<u64>() {
+                tracing::debug!(SAFESHELL_TIMEOUT = %val, "env override");
+                self.default_timeout_seconds = v;
+            } else {
+                tracing::warn!(SAFESHELL_TIMEOUT = %val, "ignoring non-numeric value");
+            }
+        }
+        if let Ok(val) = std::env::var("SAFESHELL_MAX_OUTPUT") {
+            if let Ok(v) = val.parse::<usize>() {
+                tracing::debug!(SAFESHELL_MAX_OUTPUT = %val, "env override");
+                self.max_output_bytes = v;
+            } else {
+                tracing::warn!(SAFESHELL_MAX_OUTPUT = %val, "ignoring non-numeric value");
+            }
+        }
+        if let Ok(val) = std::env::var("SAFESHELL_MAX_CONCURRENCY") {
+            if let Ok(v) = val.parse::<usize>() {
+                tracing::debug!(SAFESHELL_MAX_CONCURRENCY = %val, "env override");
+                self.max_concurrency = v;
+            } else {
+                tracing::warn!(SAFESHELL_MAX_CONCURRENCY = %val, "ignoring non-numeric value");
+            }
+        }
+        if let Ok(val) = std::env::var("SAFESHELL_SHELL") {
+            tracing::debug!(SAFESHELL_SHELL = %val, "env override");
+            self.shell = Some(val);
+        }
+        if let Ok(val) = std::env::var("SAFESHELL_HTTP_BIND") {
+            tracing::debug!(SAFESHELL_HTTP_BIND = %val, "env override");
+            self.http_bind = Some(val);
+        }
+        if let Ok(val) = std::env::var("SAFESHELL_LOG_LEVEL") {
+            tracing::debug!(SAFESHELL_LOG_LEVEL = %val, "env override");
+            self.log_level = Some(val);
+        }
+        if let Ok(val) = std::env::var("SAFESHELL_LOG_FILE") {
+            tracing::debug!(SAFESHELL_LOG_FILE = %val, "env override");
+            self.log_file = Some(val);
+        }
+        if let Ok(val) = std::env::var("SAFESHELL_SAFE_COMMANDS") {
+            tracing::debug!(SAFESHELL_SAFE_COMMANDS = %val, "env override");
+            self.additional_safe_commands = val
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+        }
+        if let Ok(val) = std::env::var("SAFESHELL_REDACT_PATTERNS") {
+            tracing::debug!(SAFESHELL_REDACT_PATTERNS = %val, "env override");
+            self.redact_env_patterns = val
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+        }
     }
 
     fn try_load(path: &Path) -> Option<Self> {
@@ -225,6 +305,113 @@ mod tests {
         } else {
             unsafe { std::env::remove_var("SAFESHELL_CONFIG") };
         }
+    }
+
+    #[test]
+    fn env_override_numeric_fields() {
+        let mut config = Config::default();
+        unsafe {
+            std::env::set_var("SAFESHELL_TIMEOUT", "120");
+            std::env::set_var("SAFESHELL_MAX_OUTPUT", "512000");
+            std::env::set_var("SAFESHELL_MAX_CONCURRENCY", "8");
+        }
+        config.apply_env_overrides();
+        unsafe {
+            std::env::remove_var("SAFESHELL_TIMEOUT");
+            std::env::remove_var("SAFESHELL_MAX_OUTPUT");
+            std::env::remove_var("SAFESHELL_MAX_CONCURRENCY");
+        }
+        assert_eq!(config.default_timeout_seconds, 120);
+        assert_eq!(config.max_output_bytes, 512_000);
+        assert_eq!(config.max_concurrency, 8);
+    }
+
+    #[test]
+    fn env_override_string_fields() {
+        let mut config = Config::default();
+        unsafe {
+            std::env::set_var("SAFESHELL_SHELL", "/bin/zsh");
+            std::env::set_var("SAFESHELL_HTTP_BIND", "0.0.0.0:9090");
+            std::env::set_var("SAFESHELL_LOG_LEVEL", "trace");
+            std::env::set_var("SAFESHELL_LOG_FILE", "/tmp/ss.log");
+        }
+        config.apply_env_overrides();
+        unsafe {
+            std::env::remove_var("SAFESHELL_SHELL");
+            std::env::remove_var("SAFESHELL_HTTP_BIND");
+            std::env::remove_var("SAFESHELL_LOG_LEVEL");
+            std::env::remove_var("SAFESHELL_LOG_FILE");
+        }
+        assert_eq!(config.shell.as_deref(), Some("/bin/zsh"));
+        assert_eq!(config.http_bind.as_deref(), Some("0.0.0.0:9090"));
+        assert_eq!(config.log_level.as_deref(), Some("trace"));
+        assert_eq!(config.log_file.as_deref(), Some("/tmp/ss.log"));
+    }
+
+    #[test]
+    fn env_override_comma_separated_lists() {
+        let mut config = Config::default();
+        unsafe {
+            std::env::set_var("SAFESHELL_SAFE_COMMANDS", "git, make, cargo");
+            std::env::set_var("SAFESHELL_REDACT_PATTERNS", "(?i)SECRET,TOKEN_.*");
+        }
+        config.apply_env_overrides();
+        unsafe {
+            std::env::remove_var("SAFESHELL_SAFE_COMMANDS");
+            std::env::remove_var("SAFESHELL_REDACT_PATTERNS");
+        }
+        assert_eq!(
+            config.additional_safe_commands,
+            vec!["git", "make", "cargo"]
+        );
+        assert_eq!(
+            config.redact_env_patterns,
+            vec!["(?i)SECRET", "TOKEN_.*"]
+        );
+    }
+
+    #[test]
+    fn env_override_invalid_numeric_ignored() {
+        let mut config = Config::default();
+        let original_timeout = config.default_timeout_seconds;
+        unsafe {
+            std::env::set_var("SAFESHELL_TIMEOUT", "not_a_number");
+        }
+        config.apply_env_overrides();
+        unsafe {
+            std::env::remove_var("SAFESHELL_TIMEOUT");
+        }
+        assert_eq!(config.default_timeout_seconds, original_timeout);
+    }
+
+    #[test]
+    fn env_override_replaces_config_file_values() {
+        let toml_str = r#"
+            default_timeout_seconds = 60
+            shell = "/bin/bash"
+            additional_safe_commands = ["old_cmd"]
+        "#;
+        let mut config: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.default_timeout_seconds, 60);
+        assert_eq!(config.shell.as_deref(), Some("/bin/bash"));
+
+        unsafe {
+            std::env::set_var("SAFESHELL_TIMEOUT", "90");
+            std::env::set_var("SAFESHELL_SHELL", "/bin/fish");
+            std::env::set_var("SAFESHELL_SAFE_COMMANDS", "new_cmd1,new_cmd2");
+        }
+        config.apply_env_overrides();
+        unsafe {
+            std::env::remove_var("SAFESHELL_TIMEOUT");
+            std::env::remove_var("SAFESHELL_SHELL");
+            std::env::remove_var("SAFESHELL_SAFE_COMMANDS");
+        }
+        assert_eq!(config.default_timeout_seconds, 90);
+        assert_eq!(config.shell.as_deref(), Some("/bin/fish"));
+        assert_eq!(
+            config.additional_safe_commands,
+            vec!["new_cmd1", "new_cmd2"]
+        );
     }
 
     #[test]
