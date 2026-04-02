@@ -5,6 +5,12 @@ edition = "2024"
 authors = ["An Nguyen <annguyen.apss@gmail.com>"]
 description = "A safety-first shell command executor MCP server"
 license = "MIT"
+repository = "https://github.com/anthropics/safeshell-mcp"
+homepage = "https://github.com/anthropics/safeshell-mcp"
+readme = "README.md"
+keywords = ["mcp", "shell", "safety", "model-context-protocol"]
+categories = ["command-line-utilities", "development-tools"]
+exclude = ["AGENTS.md", "docs/", ".mcp.json", "inspector-config.example.json"]
 
 [dependencies]
 rmcp = { version = "0.16", features = ["server", "schemars", "transport-io", "transport-streamable-http-server", "elicitation"] }
