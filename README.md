@@ -15,7 +15,50 @@ SafeShell lets AI assistants run shell commands while enforcing safety guardrail
 - **Secret redaction** — sensitive env var values are replaced with `[REDACTED]` in output
 - **Concurrency control** — semaphore-based limit on simultaneous executions
 - **Dual transport** — supports both stdio and streamable HTTP (SSE)
+- **Graceful shutdown** — signal handling with child process cleanup
 - **Cross-platform** — macOS, Linux, Windows
+
+## Architecture
+
+```
+                    ┌──────────────────────────────────────────────┐
+                    │              MCP Client                      │
+                    │  (Claude Desktop, Cursor, VS Code, etc.)     │
+                    └────────────────┬─────────────────────────────┘
+                                     │
+                          stdio or HTTP/SSE
+                                     │
+                    ┌────────────────▼─────────────────────────────┐
+                    │         SafeShell MCP Server                 │
+                    │                                              │
+                    │  Tools:                                      │
+                    │   • execute_command                          │
+                    │   • get_system_path                          │
+                    │   • list_safe_commands                       │
+                    │   • list_protected_paths                     │
+                    │                                              │
+                    │  ┌────────────────────────────────────────┐  │
+                    │  │        Safety Pipeline                 │  │
+                    │  │                                        │  │
+                    │  │  1. Parse ─► Tokenize, resolve paths   │  │
+                    │  │       │                                │  │
+                    │  │  2. Classify ─► Safe or Dangerous      │  │
+                    │  │       │                                │  │
+                    │  │  3. Location Guard ─► Protected paths  │  │
+                    │  │       │               (hard block)     │  │
+                    │  │       │                                │  │
+                    │  │  4. Permission Gate ─► User approval   │  │
+                    │  │       │               (elicitation)    │  │
+                    │  │       │                                │  │
+                    │  │  5. Execute ─► Run, sanitize output    │  │
+                    │  │                                        │  │
+                    │  └────────────────────────────────────────┘  │
+                    │                                              │
+                    │  Platform Layer (macOS / Linux / Windows)    │
+                    │   • Safe command allowlists                  │
+                    │   • Protected path definitions               │
+                    └──────────────────────────────────────────────┘
+```
 
 ## Installation
 
@@ -33,11 +76,13 @@ Download from [GitHub Releases](https://github.com/anthropics/safeshell-mcp/rele
 
 ### Build from source
 
+Requires Rust 1.85+ (edition 2024).
+
 ```bash
 cargo install --path .
 ```
 
-Or build a release binary:
+Or build a release binary (optimized for size):
 
 ```bash
 cargo build --release
@@ -46,32 +91,48 @@ cargo build --release
 
 ## Quick start
 
-### stdio transport (default)
+### 1. Run with stdio transport (default)
 
 ```bash
 safeshell-mcp
 ```
 
-### HTTP transport
+The server reads MCP messages from stdin and writes to stdout. This is the standard transport for MCP client integrations.
+
+### 2. Run with HTTP transport
 
 ```bash
 safeshell-mcp --transport http
-# or with custom bind address
+```
+
+By default, listens on `127.0.0.1:3456`. Override with `--bind`:
+
+```bash
 safeshell-mcp --transport http --bind 0.0.0.0:8080
 ```
+
+### 3. Connect an MCP client
+
+See [MCP Client Integration](#mcp-client-integration) below for Claude Desktop, Claude Code, Cursor, and VS Code configuration.
 
 ## Tools
 
 SafeShell exposes four MCP tools:
 
-| Tool | Description |
-|------|-------------|
-| `execute_command` | Run a shell command through the safety pipeline |
-| `get_system_path` | List PATH directories |
-| `list_safe_commands` | Show pre-approved commands for this OS |
-| `list_protected_paths` | Show protected directories |
-
 ### `execute_command`
+
+Run a shell command through the safety pipeline.
+
+**Parameters:**
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `command` | string | yes | — | The command to run |
+| `args` | string[] | no | `[]` | Command arguments |
+| `working_directory` | string | no | cwd | Working directory for the command |
+| `timeout_seconds` | integer | no | 30 | Maximum execution time in seconds |
+
+**Example:**
 
 ```json
 {
@@ -82,31 +143,114 @@ SafeShell exposes four MCP tools:
 }
 ```
 
-**Pipeline**: Parse → Classify → Location Guard → Permission Gate → Execute
+**Pipeline:** the command passes through five stages before execution:
 
-- **Safe commands** (e.g., `ls`, `cat`, `echo`, `git status`) execute immediately
-- **Dangerous commands** (e.g., `rm`, `curl`, `sudo`, `pip`) trigger an approval prompt
-- **Protected paths** (e.g., `/etc`, `/boot`, `/System`) are hard-blocked for writes
+1. **Parse** — tokenize the command, split chains (`&&`, `||`, `|`, `;`), resolve `~` and relative paths to absolute paths
+2. **Classify** — categorize each sub-command as safe or dangerous; if any sub-command is dangerous, the whole chain is dangerous
+3. **Location Guard** — check resolved paths (including redirection targets like `> /etc/shadow`) against protected directories; canonicalize symlinks before checking; hard-block violations
+4. **Permission Gate** — for dangerous commands, prompt the user for approval via MCP elicitation; if the client does not support elicitation, default to DENY
+5. **Execute** — run via the configured shell, enforce timeout, truncate output to `max_output_bytes`, redact sensitive env var values
+
+### `get_system_path`
+
+List all directories in the `PATH` environment variable.
+
+Returns: `path_entries` (array of directory paths), `os`, `arch`.
+
+### `list_safe_commands`
+
+Show all commands pre-approved as safe for the current OS, plus any `additional_safe_commands` from config.
+
+Returns: `commands` (array with `name` and `description`), `additional_safe_commands`, `os`, `count`.
+
+### `list_protected_paths`
+
+Show all directories protected from command execution on the current OS, plus any `additional_protected_paths` from config.
+
+Returns: `paths` (array with `path`, `read_allowed`, `reason`), `additional_protected_paths`, `os`, `count`.
+
+## Security model
+
+SafeShell implements defense-in-depth with multiple independent layers:
+
+### Command classification
+
+Every command is classified against a built-in allowlist. Commands explicitly listed as safe execute immediately. Everything else — including unknown commands — is classified as **dangerous** and requires user approval.
+
+**Always-dangerous categories** (cannot be overridden by `additional_safe_commands`):
+
+| Category | Commands |
+|----------|----------|
+| Privilege escalation | `sudo`, `doas`, `su`, `runas`, `pkexec` |
+| Destructive file ops | `rm`, `rmdir`, `chmod`, `chown`, `chgrp`, `mkfs`, `dd`, `shred`, `truncate` |
+| Network commands | `curl`, `wget`, `nc`, `ncat`, `netcat`, `ssh`, `scp`, `sftp`, `rsync`, `ftp` |
+| Package managers | `apt`, `apt-get`, `yum`, `dnf`, `pacman`, `brew`, `choco`, `pip`, `npm`, `cargo` |
+| System control | `shutdown`, `reboot`, `halt`, `poweroff`, `init`, `systemctl`, `launchctl`, `kill`, `killall`, `pkill` |
+| Disk operations | `mount`, `umount`, `fdisk`, `parted`, `lvm` |
+| Shell interpreters | `bash`, `sh`, `zsh`, `fish`, `csh`, `tcsh`, `dash`, `ksh`, `python`, `python3`, `perl`, `ruby`, `node` |
+
+For chained commands (`ls | grep foo && rm file`), each sub-command is classified independently. If **any** sub-command is dangerous, the entire chain requires approval. The approval prompt shows per-sub-command classification details.
+
+### Protected path enforcement
+
+The location guard checks all resolved path arguments (including redirection targets like `> /etc/shadow`) against OS-specific protected directories.
+
+- **Safe commands** (read-only): allowed to access protected paths where `read_allowed: true` (e.g., `cat /etc/hosts` is allowed)
+- **Dangerous commands** (write): blocked from all protected paths regardless of `read_allowed`
+- **Symlink resolution**: paths are canonicalized via `fs::canonicalize()` before checking, preventing symlink bypass attacks (e.g., `/tmp/link → /etc/shadow`)
+- **Null byte injection**: paths containing `\0` are rejected
+- **`/proc/self/root` traversal** (Linux): paths through `/proc/self/root` or `/proc/<pid>/root` are blocked to prevent chroot escapes
+
+Protected path violations are **hard-blocked** — they cannot be overridden by user approval.
+
+### Human-in-the-loop approval
+
+Dangerous commands that pass the location guard are presented to the user via MCP [elicitation](https://modelcontextprotocol.io/specification/2025-03-26/server/elicitation). The user sees the full command and the reason it was flagged, and must explicitly approve execution.
+
+If the MCP client does not support elicitation, the command is **denied by default**.
+
+### Output sanitization
+
+After execution, stdout and stderr are:
+
+1. **Truncated** to `max_output_bytes` per stream (default: 100 KB), with a `[OUTPUT TRUNCATED]` marker
+2. **Redacted** — environment variable values matching sensitive name patterns are replaced with `[REDACTED]`
+
+Built-in sensitive patterns match: `SECRET`, `PASSWORD`, `PASSWD`, `TOKEN`, `API_KEY`, `PRIVATE_KEY`, `ACCESS_KEY`, `AUTH`, `CREDENTIAL`, `DATABASE_URL`, `CONNECTION_STRING`, `SMTP`. Values shorter than 4 characters are skipped to avoid false positives. Additional patterns can be added via `redact_env_patterns` in config.
+
+### Concurrency control
+
+A semaphore limits simultaneous command executions to `max_concurrency` (default: 1). Excess requests receive an immediate error rather than queueing.
+
+### Graceful shutdown
+
+Signal handlers (SIGINT/SIGTERM on Unix, CTRL_C on Windows) trigger graceful shutdown. All tracked child processes are terminated before the server exits.
 
 ## Configuration
 
-Create a `safeshell.toml` file. Search order:
+SafeShell is configured via a TOML file. All fields are optional — sensible defaults apply.
 
-1. `$SAFESHELL_CONFIG` environment variable
-2. `./safeshell.toml` (current directory)
-3. `~/.config/safeshell/config.toml`
+### Config file search order
 
-### Example config
+| Priority | Location |
+|----------|----------|
+| 1 | Path in `$SAFESHELL_CONFIG` environment variable |
+| 2 | `./safeshell.toml` (current working directory) |
+| 3 | `~/.config/safeshell/config.toml` |
+
+If no config file is found, all defaults are used.
+
+### Full configuration reference
 
 ```toml
 # Command timeout (seconds)
-default_timeout_seconds = 60
+default_timeout_seconds = 30
 
 # Max output per stream in bytes (stdout/stderr each)
-max_output_bytes = 204800  # 200KB
+max_output_bytes = 102400
 
 # Max concurrent command executions
-max_concurrency = 4
+max_concurrency = 1
 
 # Additional commands treated as safe (beyond built-in list)
 additional_safe_commands = ["make", "just", "nx"]
@@ -115,13 +259,16 @@ additional_safe_commands = ["make", "just", "nx"]
 redact_env_patterns = ["(?i)MY_COMPANY_.*"]
 
 # Override shell (auto-detected if unset)
-shell = "/bin/bash"
+# shell = "/bin/bash"
 
-# HTTP bind address (used when --transport http, no --bind flag)
-http_bind = "127.0.0.1:3456"
+# HTTP bind address (used with --transport http when --bind is not set)
+# http_bind = "127.0.0.1:3456"
 
-# Log level filter
-log_level = "info"
+# Log level filter (e.g. "debug", "info", "warn", "safeshell_mcp=debug")
+# log_level = "info"
+
+# Path to an additional log file (logs always go to stderr too)
+# log_file = "/var/log/safeshell.log"
 
 # Additional protected paths
 [[additional_protected_paths]]
@@ -133,14 +280,40 @@ path = "/secrets"
 read_allowed = false
 ```
 
-### Defaults
+### Configuration defaults
 
-| Setting | Default |
-|---------|---------|
-| `default_timeout_seconds` | 30 |
-| `max_output_bytes` | 102400 (100KB) |
-| `max_concurrency` | 1 |
-| `shell` | `$SHELL` → `/bin/sh` (Unix), `%COMSPEC%` (Windows) |
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `default_timeout_seconds` | `30` | Max execution time per command |
+| `max_output_bytes` | `102400` (100 KB) | Max bytes per output stream before truncation |
+| `max_concurrency` | `1` | Max simultaneous command executions |
+| `additional_safe_commands` | `[]` | Extra commands to treat as safe |
+| `additional_protected_paths` | `[]` | Extra directories to protect |
+| `redact_env_patterns` | `[]` | Extra regex patterns for sensitive env var names |
+| `shell` | auto-detect | Shell binary for execution |
+| `http_bind` | `"127.0.0.1:3456"` | HTTP listen address (when using `--transport http`) |
+| `log_level` | `"info"` | Log filter (via `RUST_LOG` env or config) |
+| `log_file` | none | Optional file path for log output |
+
+### Environment variables
+
+| Variable | Description |
+|----------|-------------|
+| `SAFESHELL_CONFIG` | Path to config file (highest priority) |
+| `RUST_LOG` | Log level filter (overridden by `log_level` in config) |
+| `SHELL` (Unix) | Default shell when `shell` is not set in config |
+| `COMSPEC` (Windows) | Default shell when `shell` is not set in config |
+
+### Shell auto-detection
+
+When `shell` is not set in config:
+
+| Platform | Detection order |
+|----------|----------------|
+| Unix | `$SHELL` env var → `/bin/sh` fallback |
+| Windows | `%COMSPEC%` env var → `cmd.exe` fallback |
+
+Shell flags are auto-detected: `-c` for POSIX shells and fish, `-Command` for PowerShell/pwsh, `/C` for cmd.exe.
 
 ## MCP Client Integration
 
@@ -213,24 +386,34 @@ Add to `.vscode/mcp.json`:
 }
 ```
 
+### With custom configuration
+
+Point to a config file via environment variable:
+
+```json
+{
+  "mcpServers": {
+    "safeshell": {
+      "command": "/path/to/safeshell-mcp",
+      "env": {
+        "SAFESHELL_CONFIG": "/path/to/safeshell.toml"
+      }
+    }
+  }
+}
+```
+
 ## Safe commands
 
-Built-in safe commands vary by OS. Use the `list_safe_commands` tool to see the full list. Common safe commands include:
+Built-in safe commands vary by OS. Use the `list_safe_commands` tool to see the full list for your platform.
 
-`ls`, `cat`, `head`, `tail`, `grep`, `find`, `wc`, `sort`, `uniq`, `diff`, `echo`, `pwd`, `whoami`, `date`, `env`, `which`, `file`, `stat`, `du`, `df`, `uname`, `hostname`, `ps`, `top`, `git` (read-only subcommands), `tree`, `less`, `more`
+**Common safe commands (all platforms):** `echo`, `date`, `whoami`, `hostname`
 
-## Dangerous command categories
+**Unix (macOS + Linux):** `cat`, `ls`, `head`, `tail`, `wc`, `pwd`, `uname`, `which`, `printenv`, `df`, `uptime`
 
-| Category | Examples |
-|----------|----------|
-| Privilege escalation | `sudo`, `doas`, `su`, `pkexec` |
-| Destructive file ops | `rm`, `chmod`, `chown`, `dd`, `shred` |
-| Network commands | `curl`, `wget`, `ssh`, `nc`, `rsync` |
-| Package managers | `apt`, `brew`, `pip`, `npm`, `cargo` |
-| System control | `shutdown`, `reboot`, `kill`, `systemctl` |
-| Shell interpreters | `bash`, `python`, `node`, `perl` |
+**Windows:** `dir`, `type`, `where`, `ver`, `set`, `cd`
 
-Any command not in the safe allowlist is classified as dangerous by default.
+Commands not on the safe allowlist are classified as dangerous by default and require user approval.
 
 ## License
 
