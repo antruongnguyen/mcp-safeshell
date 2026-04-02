@@ -1,6 +1,8 @@
 //! Stage 2: Command Classifier
 //!
 //! Determines whether each sub-command is Safe or Dangerous.
+//! For chained commands, classifies each independently and aggregates:
+//! if any sub-command is dangerous, the whole chain is dangerous.
 
 use super::parser::ParsedCommand;
 use crate::platform;
@@ -10,6 +12,32 @@ use crate::platform;
 pub enum Classification {
     Safe,
     Dangerous { reason: String },
+}
+
+/// Per-sub-command classification detail (used for chain analysis reporting).
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub struct SubCommandClassification {
+    /// The command name.
+    pub command: String,
+    /// Index of this sub-command within the chain (0-based).
+    pub index: usize,
+    /// The raw text of this sub-command.
+    pub raw: String,
+    /// Classification result.
+    pub classification: Classification,
+}
+
+/// Aggregate result of classifying a chain of commands.
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub struct ChainClassification {
+    /// The aggregate classification (dangerous if any sub-command is dangerous).
+    pub aggregate: Classification,
+    /// Per-sub-command details.
+    pub details: Vec<SubCommandClassification>,
+    /// Whether this was a chained command (more than one sub-command).
+    pub is_chained: bool,
 }
 
 /// Classify a parsed command.
@@ -112,34 +140,67 @@ pub fn classify(cmd: &ParsedCommand) -> Classification {
     }
 }
 
+/// Classify all sub-commands independently, producing per-command details
+/// and an aggregate result.
+///
+/// If any sub-command is Dangerous (and not overridden by `additional_safe`),
+/// the whole chain is classified as Dangerous.
+///
+/// `additional_safe` lists extra command names (from config) that should be
+/// treated as safe beyond the built-in platform allowlist.
+pub fn classify_chain(
+    cmds: &[ParsedCommand],
+    additional_safe: &[String],
+    is_chained: bool,
+) -> ChainClassification {
+    let mut details = Vec::with_capacity(cmds.len());
+    let mut aggregate_reasons = Vec::new();
+
+    for (index, cmd) in cmds.iter().enumerate() {
+        let mut classification = classify(cmd);
+
+        // Override if command is in the additional safe list
+        if matches!(classification, Classification::Dangerous { .. })
+            && additional_safe.iter().any(|s| s == &cmd.command)
+        {
+            classification = Classification::Safe;
+        }
+
+        if let Classification::Dangerous { ref reason } = classification {
+            aggregate_reasons.push(format!("[{}] {}: {}", index + 1, cmd.command, reason));
+        }
+
+        details.push(SubCommandClassification {
+            command: cmd.command.clone(),
+            index,
+            raw: cmd.raw.clone(),
+            classification,
+        });
+    }
+
+    let aggregate = if aggregate_reasons.is_empty() {
+        Classification::Safe
+    } else {
+        Classification::Dangerous {
+            reason: aggregate_reasons.join("; "),
+        }
+    };
+
+    ChainClassification {
+        aggregate,
+        details,
+        is_chained,
+    }
+}
+
 /// Classify all sub-commands. Returns the most restrictive classification
 /// (if any is Dangerous, the whole chain is Dangerous).
 ///
 /// `additional_safe` lists extra command names (from config) that should be
 /// treated as safe beyond the built-in platform allowlist.
+#[allow(dead_code)]
 pub fn classify_all(cmds: &[ParsedCommand], additional_safe: &[String]) -> Classification {
-    let mut reasons = Vec::new();
-
-    for cmd in cmds {
-        match classify(cmd) {
-            Classification::Dangerous { reason } => {
-                // Check if this command is in the additional safe list
-                if additional_safe.iter().any(|s| s == &cmd.command) {
-                    continue;
-                }
-                reasons.push(reason);
-            }
-            Classification::Safe => {}
-        }
-    }
-
-    if reasons.is_empty() {
-        Classification::Safe
-    } else {
-        Classification::Dangerous {
-            reason: reasons.join("; "),
-        }
-    }
+    classify_chain(cmds, additional_safe, cmds.len() > 1).aggregate
 }
 
 #[cfg(test)]
@@ -213,5 +274,114 @@ mod tests {
     fn test_classify_all_all_safe() {
         let cmds = vec![cmd("echo", &["hello"]), cmd("ls", &["-la"])];
         assert_eq!(classify_all(&cmds, &[]), Classification::Safe);
+    }
+
+    // ── Chain analysis tests ──
+
+    #[test]
+    fn test_chain_classification_details() {
+        let cmds = vec![
+            cmd("echo", &["hello"]),
+            cmd("rm", &["-rf", "/tmp/x"]),
+            cmd("ls", &["-la"]),
+        ];
+        let result = classify_chain(&cmds, &[], true);
+
+        assert!(result.is_chained);
+        assert!(matches!(result.aggregate, Classification::Dangerous { .. }));
+        assert_eq!(result.details.len(), 3);
+
+        // echo is safe
+        assert_eq!(result.details[0].command, "echo");
+        assert_eq!(result.details[0].index, 0);
+        assert!(matches!(
+            result.details[0].classification,
+            Classification::Safe
+        ));
+
+        // rm is dangerous
+        assert_eq!(result.details[1].command, "rm");
+        assert_eq!(result.details[1].index, 1);
+        assert!(matches!(
+            result.details[1].classification,
+            Classification::Dangerous { .. }
+        ));
+
+        // ls is safe
+        assert_eq!(result.details[2].command, "ls");
+        assert_eq!(result.details[2].index, 2);
+        assert!(matches!(
+            result.details[2].classification,
+            Classification::Safe
+        ));
+    }
+
+    #[test]
+    fn test_chain_all_safe() {
+        let cmds = vec![cmd("echo", &["a"]), cmd("ls", &["-la"]), cmd("cat", &["f"])];
+        let result = classify_chain(&cmds, &[], true);
+
+        assert!(matches!(result.aggregate, Classification::Safe));
+        assert!(
+            result
+                .details
+                .iter()
+                .all(|d| matches!(d.classification, Classification::Safe))
+        );
+    }
+
+    #[test]
+    fn test_chain_multiple_dangerous() {
+        let cmds = vec![
+            cmd("rm", &["-rf", "/"]),
+            cmd("curl", &["evil.com"]),
+            cmd("echo", &["done"]),
+        ];
+        let result = classify_chain(&cmds, &[], true);
+
+        assert!(matches!(result.aggregate, Classification::Dangerous { .. }));
+
+        // Both rm and curl should be dangerous
+        let dangerous_count = result
+            .details
+            .iter()
+            .filter(|d| matches!(d.classification, Classification::Dangerous { .. }))
+            .count();
+        assert_eq!(dangerous_count, 2);
+    }
+
+    #[test]
+    fn test_chain_additional_safe_override() {
+        let cmds = vec![cmd("echo", &["hello"]), cmd("my_tool", &["--flag"])];
+        let additional = vec!["my_tool".to_string()];
+        let result = classify_chain(&cmds, &additional, true);
+
+        assert!(matches!(result.aggregate, Classification::Safe));
+        // my_tool should be classified as safe after override
+        assert!(matches!(
+            result.details[1].classification,
+            Classification::Safe
+        ));
+    }
+
+    #[test]
+    fn test_chain_reason_includes_index() {
+        let cmds = vec![cmd("echo", &["hello"]), cmd("rm", &["-rf", "/"])];
+        let result = classify_chain(&cmds, &[], true);
+        if let Classification::Dangerous { reason } = &result.aggregate {
+            // Reason should reference command index
+            assert!(reason.contains("[2]"));
+            assert!(reason.contains("rm"));
+        } else {
+            panic!("Expected dangerous classification");
+        }
+    }
+
+    #[test]
+    fn test_single_command_not_chained() {
+        let cmds = vec![cmd("echo", &["hello"])];
+        let result = classify_chain(&cmds, &[], false);
+        assert!(!result.is_chained);
+        assert_eq!(result.details.len(), 1);
     }
 }

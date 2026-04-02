@@ -48,7 +48,7 @@ impl Sanitizer {
         }
 
         // Sort by length descending so longer values are replaced first
-        sensitive_values.sort_by(|a, b| b.len().cmp(&a.len()));
+        sensitive_values.sort_by_key(|b| std::cmp::Reverse(b.len()));
 
         Self { sensitive_values }
     }

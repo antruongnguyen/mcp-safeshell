@@ -5,6 +5,19 @@
 
 use std::path::{Path, PathBuf};
 
+/// The operator connecting two sub-commands in a chain.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChainOperator {
+    /// `&&` — run next only if previous succeeded.
+    And,
+    /// `||` — run next only if previous failed.
+    Or,
+    /// `|` — pipe stdout to next command's stdin.
+    Pipe,
+    /// `;` — unconditional sequencing.
+    Semicolon,
+}
+
 /// A single parsed sub-command within a pipeline or chain.
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
@@ -21,8 +34,14 @@ pub struct ParsedCommand {
 
 /// Result of parsing: one or more sub-commands.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct ParseResult {
     pub commands: Vec<ParsedCommand>,
+    /// Operators between consecutive sub-commands.
+    /// Length is always `commands.len() - 1` (empty for single commands).
+    pub operators: Vec<ChainOperator>,
+    /// Whether the input contained chain operators (more than one sub-command).
+    pub is_chained: bool,
 }
 
 /// Parse a raw command string into sub-commands.
@@ -31,19 +50,26 @@ pub struct ParseResult {
 /// For each, resolves `~` in arguments and identifies path-like arguments.
 pub fn parse(raw_command: &str, working_dir: &Path) -> ParseResult {
     let raw = raw_command.trim();
-    let segments = split_chain(raw);
+    let (segments, operators) = split_chain(raw);
+    let is_chained = segments.len() > 1;
 
     let commands = segments
         .into_iter()
         .map(|seg| parse_single(seg.trim(), working_dir))
         .collect();
 
-    ParseResult { commands }
+    ParseResult {
+        commands,
+        operators,
+        is_chained,
+    }
 }
 
 /// Split a command string on chain operators: `&&`, `||`, `;`, `|`.
-fn split_chain(input: &str) -> Vec<&str> {
+/// Returns the segments and the operators between them.
+fn split_chain(input: &str) -> (Vec<&str>, Vec<ChainOperator>) {
     let mut segments = Vec::new();
+    let mut operators = Vec::new();
     let mut start = 0;
     let bytes = input.as_bytes();
     let len = bytes.len();
@@ -71,18 +97,36 @@ fn split_chain(input: &str) -> Vec<&str> {
         }
 
         // Check for `&&` or `||`
-        if i + 1 < len
-            && ((ch == b'&' && bytes[i + 1] == b'&') || (ch == b'|' && bytes[i + 1] == b'|'))
-        {
+        if i + 1 < len {
+            if ch == b'&' && bytes[i + 1] == b'&' {
+                segments.push(&input[start..i]);
+                operators.push(ChainOperator::And);
+                i += 2;
+                start = i;
+                continue;
+            }
+            if ch == b'|' && bytes[i + 1] == b'|' {
+                segments.push(&input[start..i]);
+                operators.push(ChainOperator::Or);
+                i += 2;
+                start = i;
+                continue;
+            }
+        }
+
+        // Single `|` (pipe)
+        if ch == b'|' {
             segments.push(&input[start..i]);
-            i += 2;
+            operators.push(ChainOperator::Pipe);
+            i += 1;
             start = i;
             continue;
         }
 
-        // Single `|` (pipe) or `;`
-        if ch == b'|' || ch == b';' {
+        // `;` (semicolon)
+        if ch == b';' {
             segments.push(&input[start..i]);
+            operators.push(ChainOperator::Semicolon);
             i += 1;
             start = i;
             continue;
@@ -95,7 +139,7 @@ fn split_chain(input: &str) -> Vec<&str> {
         segments.push(&input[start..]);
     }
 
-    segments
+    (segments, operators)
 }
 
 /// Parse a single command (no chain operators).
@@ -269,6 +313,8 @@ mod tests {
         assert_eq!(result.commands.len(), 1);
         assert_eq!(result.commands[0].command, "ls");
         assert_eq!(result.commands[0].args, vec!["-la"]);
+        assert!(!result.is_chained);
+        assert!(result.operators.is_empty());
     }
 
     #[test]
@@ -277,6 +323,8 @@ mod tests {
         assert_eq!(result.commands.len(), 2);
         assert_eq!(result.commands[0].command, "echo");
         assert_eq!(result.commands[1].command, "rm");
+        assert!(result.is_chained);
+        assert_eq!(result.operators, vec![ChainOperator::And]);
     }
 
     #[test]
@@ -285,6 +333,56 @@ mod tests {
         assert_eq!(result.commands.len(), 2);
         assert_eq!(result.commands[0].command, "cat");
         assert_eq!(result.commands[1].command, "grep");
+        assert!(result.is_chained);
+        assert_eq!(result.operators, vec![ChainOperator::Pipe]);
+    }
+
+    #[test]
+    fn test_or_chain() {
+        let result = parse("test -f file.txt || echo missing", Path::new("/tmp"));
+        assert_eq!(result.commands.len(), 2);
+        assert_eq!(result.commands[0].command, "test");
+        assert_eq!(result.commands[1].command, "echo");
+        assert_eq!(result.operators, vec![ChainOperator::Or]);
+    }
+
+    #[test]
+    fn test_semicolon_chain() {
+        let result = parse("echo start; ls; echo done", Path::new("/tmp"));
+        assert_eq!(result.commands.len(), 3);
+        assert_eq!(result.commands[0].command, "echo");
+        assert_eq!(result.commands[1].command, "ls");
+        assert_eq!(result.commands[2].command, "echo");
+        assert_eq!(
+            result.operators,
+            vec![ChainOperator::Semicolon, ChainOperator::Semicolon]
+        );
+    }
+
+    #[test]
+    fn test_mixed_operators() {
+        let result = parse(
+            "echo a && echo b | grep b || echo c; echo d",
+            Path::new("/tmp"),
+        );
+        assert_eq!(result.commands.len(), 5);
+        assert_eq!(
+            result.operators,
+            vec![
+                ChainOperator::And,
+                ChainOperator::Pipe,
+                ChainOperator::Or,
+                ChainOperator::Semicolon,
+            ]
+        );
+    }
+
+    #[test]
+    fn test_quoted_operators_not_split() {
+        let result = parse("echo 'hello && world'", Path::new("/tmp"));
+        assert_eq!(result.commands.len(), 1);
+        assert_eq!(result.commands[0].command, "echo");
+        assert!(!result.is_chained);
     }
 
     #[test]

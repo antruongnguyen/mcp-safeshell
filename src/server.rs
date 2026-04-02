@@ -116,8 +116,12 @@ impl SafeShellServer {
         let parsed = parser::parse(&full_command, &working_dir);
 
         // ── Stage 2: Classify (per sub-command, Phase 3.2) ──
-        let classification =
-            classifier::classify_all(&parsed.commands, &self.config.additional_safe_commands);
+        let chain_result = classifier::classify_chain(
+            &parsed.commands,
+            &self.config.additional_safe_commands,
+            parsed.is_chained,
+        );
+        let classification = chain_result.aggregate.clone();
         let (class_str, class_reason) = match &classification {
             classifier::Classification::Safe => ("safe", String::new()),
             classifier::Classification::Dangerous { reason } => ("dangerous", reason.clone()),
@@ -132,6 +136,26 @@ impl SafeShellServer {
             },
         )
         .await;
+
+        // Build per-sub-command detail string for chained commands
+        let chain_detail = if chain_result.is_chained {
+            let details: Vec<String> = chain_result
+                .details
+                .iter()
+                .map(|d| {
+                    let status = match &d.classification {
+                        classifier::Classification::Safe => "safe".to_string(),
+                        classifier::Classification::Dangerous { reason } => {
+                            format!("DANGEROUS ({reason})")
+                        }
+                    };
+                    format!("  [{}] `{}` → {}", d.index + 1, d.command, status)
+                })
+                .collect();
+            Some(format!("Chain analysis:\n{}", details.join("\n")))
+        } else {
+            None
+        };
 
         // ── Stage 3: Location Guard (with symlink resolution, Phase 3.5) ──
         let guard = location_guard::check_paths(
@@ -162,14 +186,26 @@ impl SafeShellServer {
             )
             .await;
 
-            return Ok(CallToolResult::error(vec![Content::text(format!(
+            let mut blocked_msg = format!(
                 "BLOCKED: Command targets protected path(s):\n{}",
                 violation_desc.join("\n")
-            ))]));
+            );
+            if let Some(ref detail) = chain_detail {
+                blocked_msg.push_str(&format!("\n\n{detail}"));
+            }
+
+            return Ok(CallToolResult::error(vec![Content::text(blocked_msg)]));
         }
 
         // ── Stage 4: Permission Gate (only for dangerous commands) ──
         if let classifier::Classification::Dangerous { reason } = &classification {
+            // Enrich reason with chain analysis details when available
+            let gate_reason = if let Some(ref detail) = chain_detail {
+                format!("{reason}\n\n{detail}")
+            } else {
+                reason.clone()
+            };
+
             logging::log_event(
                 &context,
                 LogEvent::PermissionRequested {
@@ -178,7 +214,7 @@ impl SafeShellServer {
             )
             .await;
 
-            let decision = permission_gate::gate(&context, &full_command, reason).await;
+            let decision = permission_gate::gate(&context, &full_command, &gate_reason).await;
 
             match &decision {
                 permission_gate::GateDecision::Approved => {
@@ -307,7 +343,11 @@ impl SafeShellServer {
         description = "Get the system PATH environment variable, listing all directories where executables are found"
     )]
     fn get_system_path(&self) -> Result<CallToolResult, McpError> {
-        let separator = if cfg!(target_os = "windows") { ";" } else { ":" };
+        let separator = if cfg!(target_os = "windows") {
+            ";"
+        } else {
+            ":"
+        };
         let path_var = std::env::var("PATH").unwrap_or_default();
         let entries: Vec<&str> = path_var.split(separator).collect();
 
@@ -404,9 +444,7 @@ impl ServerHandler for SafeShellServer {
                 name: "safeshell-mcp".to_string(),
                 title: Some("SafeShell MCP Server".to_string()),
                 version: env!("CARGO_PKG_VERSION").to_string(),
-                description: Some(
-                    "A safety-first shell command executor MCP server".to_string(),
-                ),
+                description: Some("A safety-first shell command executor MCP server".to_string()),
                 icons: None,
                 website_url: None,
             },
@@ -423,23 +461,49 @@ impl ServerHandler for SafeShellServer {
 
 fn resolve_shell(config: &Config) -> (String, String) {
     if let Some(ref shell) = config.shell {
-        return shell_with_flag(shell);
+        if !std::path::Path::new(shell).exists() {
+            tracing::warn!(
+                shell = %shell,
+                "configured shell not found on disk, using it anyway"
+            );
+        }
+        let result = shell_with_flag(shell);
+        tracing::debug!(shell = %result.0, flag = %result.1, source = "config", "resolved shell");
+        return result;
     }
 
     #[cfg(not(target_os = "windows"))]
     {
         if let Ok(shell) = std::env::var("SHELL") {
             if std::path::Path::new(&shell).exists() {
-                return shell_with_flag(&shell);
+                let result = shell_with_flag(&shell);
+                tracing::debug!(
+                    shell = %result.0, flag = %result.1, source = "$SHELL", "resolved shell"
+                );
+                return result;
             }
+            tracing::debug!(
+                shell = %shell,
+                "SHELL env var set but path does not exist, falling back"
+            );
         }
+        tracing::debug!(
+            shell = "/bin/sh",
+            flag = "-c",
+            source = "fallback",
+            "resolved shell"
+        );
         ("/bin/sh".to_string(), "-c".to_string())
     }
 
     #[cfg(target_os = "windows")]
     {
         let comspec = std::env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".to_string());
-        shell_with_flag(&comspec)
+        let result = shell_with_flag(&comspec);
+        tracing::debug!(
+            shell = %result.0, flag = %result.1, source = "COMSPEC", "resolved shell"
+        );
+        result
     }
 }
 
@@ -449,8 +513,110 @@ fn shell_with_flag(shell: &str) -> (String, String) {
         (shell.to_string(), "-Command".to_string())
     } else if lower.contains("cmd") {
         (shell.to_string(), "/C".to_string())
-    } else {
+    } else if lower.contains("fish") {
         (shell.to_string(), "-c".to_string())
+    } else {
+        // POSIX shells: bash, sh, zsh, dash, ksh, etc.
+        (shell.to_string(), "-c".to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shell_with_flag_posix_shells() {
+        assert_eq!(
+            shell_with_flag("/bin/bash"),
+            ("/bin/bash".to_string(), "-c".to_string())
+        );
+        assert_eq!(
+            shell_with_flag("/bin/sh"),
+            ("/bin/sh".to_string(), "-c".to_string())
+        );
+        assert_eq!(
+            shell_with_flag("/bin/zsh"),
+            ("/bin/zsh".to_string(), "-c".to_string())
+        );
+        assert_eq!(
+            shell_with_flag("/usr/bin/dash"),
+            ("/usr/bin/dash".to_string(), "-c".to_string())
+        );
+    }
+
+    #[test]
+    fn shell_with_flag_fish() {
+        assert_eq!(
+            shell_with_flag("/usr/bin/fish"),
+            ("/usr/bin/fish".to_string(), "-c".to_string())
+        );
+    }
+
+    #[test]
+    fn shell_with_flag_powershell() {
+        assert_eq!(
+            shell_with_flag("powershell.exe"),
+            ("powershell.exe".to_string(), "-Command".to_string())
+        );
+        assert_eq!(
+            shell_with_flag("/usr/bin/pwsh"),
+            ("/usr/bin/pwsh".to_string(), "-Command".to_string())
+        );
+        assert_eq!(
+            shell_with_flag("C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"),
+            (
+                "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe".to_string(),
+                "-Command".to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn shell_with_flag_cmd() {
+        assert_eq!(
+            shell_with_flag("cmd.exe"),
+            ("cmd.exe".to_string(), "/C".to_string())
+        );
+        assert_eq!(
+            shell_with_flag("C:\\Windows\\System32\\cmd.exe"),
+            (
+                "C:\\Windows\\System32\\cmd.exe".to_string(),
+                "/C".to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn resolve_shell_config_override() {
+        let mut config = Config::default();
+        config.shell = Some("/usr/local/bin/bash".to_string());
+        let (shell, flag) = resolve_shell(&config);
+        assert_eq!(shell, "/usr/local/bin/bash");
+        assert_eq!(flag, "-c");
+    }
+
+    #[test]
+    fn resolve_shell_config_powershell_override() {
+        let mut config = Config::default();
+        config.shell = Some("pwsh".to_string());
+        let (shell, flag) = resolve_shell(&config);
+        assert_eq!(shell, "pwsh");
+        assert_eq!(flag, "-Command");
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn resolve_shell_unix_fallback() {
+        let config = Config {
+            shell: None,
+            ..Config::default()
+        };
+        // With no config override and potentially invalid $SHELL,
+        // the result must be a valid shell + flag pair.
+        let (shell, flag) = resolve_shell(&config);
+        assert!(!shell.is_empty());
+        assert!(flag == "-c" || flag == "-Command");
     }
 }
 
