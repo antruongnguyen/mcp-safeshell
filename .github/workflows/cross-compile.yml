@@ -3,8 +3,14 @@ name: Cross-compile
 on:
   push:
     branches: [main]
+    paths:
+      - '**.rs'
+      - 'Cargo.toml'
   pull_request:
     branches: [main]
+    paths:
+      - '**.rs'
+      - 'Cargo.toml'
 
 env:
   CARGO_TERM_COLOR: always
@@ -39,7 +45,7 @@ jobs:
             binary: safeshell-mcp-windows-x86_64.exe
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -62,7 +68,7 @@ jobs:
         run: cargo build --release --target ${{ matrix.target }}
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.binary }}
           path: target/${{ matrix.target }}/release/safeshell-mcp${{ contains(matrix.os, 'windows') && '.exe' || '' }}

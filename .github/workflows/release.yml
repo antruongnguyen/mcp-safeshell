@@ -40,7 +40,7 @@ jobs:
             binary: safeshell-mcp-windows-x86_64.exe
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -71,7 +71,7 @@ jobs:
         run: copy target\${{ matrix.target }}\release\safeshell-mcp.exe ${{ matrix.binary }}
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.binary }}
           path: ${{ matrix.binary }}
@@ -81,7 +81,7 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Download all artifacts
         uses: actions/download-artifact@v4
