@@ -1,0 +1,7 @@
+{
+  "servers": {
+    "safeshell": {
+      "command": "safeshell-mcp"
+    }
+  }
+}

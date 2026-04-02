@@ -317,6 +317,8 @@ Shell flags are auto-detected: `-c` for POSIX shells and fish, `-Command` for Po
 
 ## MCP Client Integration
 
+> Ready-to-copy configuration files for all supported MCP hosts are available in the [examples/](examples/) directory.
+
 ### Claude Desktop
 
 Add to `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) or `%APPDATA%\Claude\claude_desktop_config.json` (Windows):

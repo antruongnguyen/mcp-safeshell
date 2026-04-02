@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "safeshell": {
+      "command": "safeshell-mcp",
+      "env": {
+        "SAFESHELL_CONFIG": "/path/to/safeshell.toml",
+        "SAFESHELL_TIMEOUT": "60",
+        "SAFESHELL_MAX_OUTPUT": "204800"
+      }
+    }
+  }
+}
