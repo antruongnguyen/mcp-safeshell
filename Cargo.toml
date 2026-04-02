@@ -8,7 +8,7 @@ license = "MIT"
 repository = "https://github.com/anthropics/safeshell-mcp"
 homepage = "https://github.com/anthropics/safeshell-mcp"
 readme = "README.md"
-keywords = ["mcp", "shell", "safety", "model-context-protocol"]
+keywords = ["mcp", "shell", "safety", "mcp-server", "command-executor"]
 categories = ["command-line-utilities", "development-tools"]
 exclude = ["AGENTS.md", "docs/", ".mcp.json", "inspector-config.example.json"]
 
