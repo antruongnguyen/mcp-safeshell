@@ -297,12 +297,44 @@ read_allowed = false
 
 ### Environment variables
 
-| Variable | Description |
-|----------|-------------|
-| `SAFESHELL_CONFIG` | Path to config file (highest priority) |
-| `RUST_LOG` | Log level filter (overridden by `log_level` in config) |
-| `SHELL` (Unix) | Default shell when `shell` is not set in config |
-| `COMSPEC` (Windows) | Default shell when `shell` is not set in config |
+Individual config fields can be overridden via `SAFESHELL_*` environment variables. These take precedence over config file values.
+
+| Variable | Config field | Description |
+|----------|-------------|-------------|
+| `SAFESHELL_CONFIG` | — | Path to config file (highest priority for file location) |
+| `SAFESHELL_TIMEOUT` | `default_timeout_seconds` | Command timeout in seconds |
+| `SAFESHELL_MAX_OUTPUT` | `max_output_bytes` | Max output per stream in bytes |
+| `SAFESHELL_MAX_CONCURRENCY` | `max_concurrency` | Max simultaneous executions |
+| `SAFESHELL_SHELL` | `shell` | Shell binary path |
+| `SAFESHELL_HTTP_BIND` | `http_bind` | HTTP listen address |
+| `SAFESHELL_LOG_LEVEL` | `log_level` | Log filter string |
+| `SAFESHELL_LOG_FILE` | `log_file` | Log file path |
+| `SAFESHELL_SAFE_COMMANDS` | `additional_safe_commands` | Comma-separated list of additional safe commands |
+| `SAFESHELL_REDACT_PATTERNS` | `redact_env_patterns` | Comma-separated list of regex patterns for env var redaction |
+| `RUST_LOG` | — | Log level filter (overridden by `log_level` / `SAFESHELL_LOG_LEVEL`) |
+| `SHELL` (Unix) | — | Default shell when `shell` is not set |
+| `COMSPEC` (Windows) | — | Default shell when `shell` is not set |
+
+**Precedence:** environment variables > config file > defaults.
+
+Invalid numeric values (for `SAFESHELL_TIMEOUT`, `SAFESHELL_MAX_OUTPUT`, `SAFESHELL_MAX_CONCURRENCY`) are logged as warnings and ignored.
+
+**Example — configure via environment in an MCP client:**
+
+```json
+{
+  "mcpServers": {
+    "safeshell": {
+      "command": "/path/to/safeshell-mcp",
+      "env": {
+        "SAFESHELL_TIMEOUT": "120",
+        "SAFESHELL_SAFE_COMMANDS": "make,just,nx",
+        "SAFESHELL_LOG_LEVEL": "debug"
+      }
+    }
+  }
+}
+```
 
 ### Shell auto-detection
 
