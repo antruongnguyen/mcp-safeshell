@@ -456,28 +456,27 @@ impl SafeShellServer {
 #[tool_handler]
 impl ServerHandler for SafeShellServer {
     fn get_info(&self) -> ServerInfo {
-        ServerInfo {
-            protocol_version: ProtocolVersion::default(),
-            capabilities: ServerCapabilities::builder()
-                .enable_tools()
-                .enable_logging()
-                .build(),
-            server_info: Implementation {
-                name: "safeshell-mcp".to_string(),
-                title: Some("SafeShell MCP Server".to_string()),
-                version: env!("CARGO_PKG_VERSION").to_string(),
-                description: Some("A safety-first shell command executor MCP server".to_string()),
-                icons: None,
-                website_url: None,
-            },
-            instructions: Some(
-                "SafeShell MCP Server — a safety-first shell command executor. \
-                 Commands are classified as safe or dangerous. Safe commands run immediately. \
-                 Dangerous commands require user approval via elicitation. \
-                 Protected system paths are hard-blocked and cannot be overridden."
-                    .to_string(),
-            ),
-        }
+        let mut impl_info = Implementation::default();
+        impl_info.name = "safeshell-mcp".to_string();
+        impl_info.title = Some("SafeShell MCP Server".to_string());
+        impl_info.version = env!("CARGO_PKG_VERSION").to_string();
+        impl_info.description =
+            Some("A safety-first shell command executor MCP server".to_string());
+
+        let mut info = ServerInfo::default();
+        info.capabilities = ServerCapabilities::builder()
+            .enable_tools()
+            .enable_logging()
+            .build();
+        info.server_info = impl_info;
+        info.instructions = Some(
+            "SafeShell MCP Server — a safety-first shell command executor. \
+             Commands are classified as safe or dangerous. Safe commands run immediately. \
+             Dangerous commands require user approval via elicitation. \
+             Protected system paths are hard-blocked and cannot be overridden."
+                .to_string(),
+        );
+        info
     }
 }
 
