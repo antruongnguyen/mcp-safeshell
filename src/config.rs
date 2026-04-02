@@ -198,7 +198,11 @@ mod tests {
         let config: Config = toml::from_str(toml_str).unwrap();
         assert_eq!(config.additional_safe_commands.len(), 5);
         assert!(config.additional_safe_commands.contains(&"git".to_string()));
-        assert!(config.additional_safe_commands.contains(&"pnpm".to_string()));
+        assert!(
+            config
+                .additional_safe_commands
+                .contains(&"pnpm".to_string())
+        );
     }
 
     #[test]

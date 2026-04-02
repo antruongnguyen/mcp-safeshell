@@ -205,7 +205,10 @@ mod tests {
     #[test]
     fn usr_bin_is_protected() {
         let has_usr_bin = protected_paths().iter().any(|pp| pp.path == "/usr/bin");
-        assert!(has_usr_bin, "/usr/bin should be in the protected paths list");
+        assert!(
+            has_usr_bin,
+            "/usr/bin should be in the protected paths list"
+        );
     }
 
     #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -214,11 +217,7 @@ mod tests {
         // /etc, /usr/bin should have read_allowed=true
         for pp in protected_paths() {
             if pp.path == "/etc" || pp.path == "/usr/bin" {
-                assert!(
-                    pp.read_allowed,
-                    "{} should have read_allowed=true",
-                    pp.path
-                );
+                assert!(pp.read_allowed, "{} should have read_allowed=true", pp.path);
             }
         }
     }

@@ -465,7 +465,10 @@ mod tests {
     fn multiple_pipes() {
         let result = parse("cat file | grep foo | wc -l", Path::new("/tmp"));
         assert_eq!(result.commands.len(), 3);
-        assert_eq!(result.operators, vec![ChainOperator::Pipe, ChainOperator::Pipe]);
+        assert_eq!(
+            result.operators,
+            vec![ChainOperator::Pipe, ChainOperator::Pipe]
+        );
         assert_eq!(result.commands[0].command, "cat");
         assert_eq!(result.commands[1].command, "grep");
         assert_eq!(result.commands[2].command, "wc");
@@ -475,7 +478,10 @@ mod tests {
     fn consecutive_and_operators() {
         let result = parse("cmd1 && cmd2 && cmd3", Path::new("/tmp"));
         assert_eq!(result.commands.len(), 3);
-        assert_eq!(result.operators, vec![ChainOperator::And, ChainOperator::And]);
+        assert_eq!(
+            result.operators,
+            vec![ChainOperator::And, ChainOperator::And]
+        );
     }
 
     // ── Quote handling ─────────────────────────────────────────────
@@ -577,9 +583,11 @@ mod tests {
         let result = parse("cat ~/test.txt", Path::new("/tmp"));
         assert_eq!(result.commands[0].resolved_paths.len(), 1);
         assert!(result.commands[0].resolved_paths[0].is_absolute());
-        assert!(result.commands[0].resolved_paths[0]
-            .to_string_lossy()
-            .contains("test.txt"));
+        assert!(
+            result.commands[0].resolved_paths[0]
+                .to_string_lossy()
+                .contains("test.txt")
+        );
     }
 
     #[test]
@@ -660,17 +668,17 @@ mod tests {
     #[test]
     fn deeply_nested_parent_dirs() {
         let result = parse("cat /a/b/c/../../d", Path::new("/tmp"));
-        assert_eq!(
-            result.commands[0].resolved_paths[0],
-            PathBuf::from("/a/d")
-        );
+        assert_eq!(result.commands[0].resolved_paths[0], PathBuf::from("/a/d"));
     }
 
     // ── normalize_path unit tests ──────────────────────────────────
 
     #[test]
     fn normalize_removes_dot() {
-        assert_eq!(normalize_path(Path::new("/a/./b/c")), PathBuf::from("/a/b/c"));
+        assert_eq!(
+            normalize_path(Path::new("/a/./b/c")),
+            PathBuf::from("/a/b/c")
+        );
     }
 
     #[test]
@@ -798,33 +806,41 @@ mod tests {
     #[test]
     fn redirect_stdout_target_resolved() {
         let result = parse("echo evil > /etc/shadow", Path::new("/tmp"));
-        assert!(result.commands[0]
-            .resolved_paths
-            .contains(&PathBuf::from("/etc/shadow")));
+        assert!(
+            result.commands[0]
+                .resolved_paths
+                .contains(&PathBuf::from("/etc/shadow"))
+        );
     }
 
     #[test]
     fn redirect_append_target_resolved() {
         let result = parse("echo data >> /var/log/auth.log", Path::new("/tmp"));
-        assert!(result.commands[0]
-            .resolved_paths
-            .contains(&PathBuf::from("/var/log/auth.log")));
+        assert!(
+            result.commands[0]
+                .resolved_paths
+                .contains(&PathBuf::from("/var/log/auth.log"))
+        );
     }
 
     #[test]
     fn redirect_stderr_target_resolved() {
         let result = parse("cmd 2> /etc/passwd", Path::new("/tmp"));
-        assert!(result.commands[0]
-            .resolved_paths
-            .contains(&PathBuf::from("/etc/passwd")));
+        assert!(
+            result.commands[0]
+                .resolved_paths
+                .contains(&PathBuf::from("/etc/passwd"))
+        );
     }
 
     #[test]
     fn redirect_relative_target_resolved_to_absolute() {
         let result = parse("echo x > ./output.txt", Path::new("/home/user"));
-        assert!(result.commands[0]
-            .resolved_paths
-            .contains(&PathBuf::from("/home/user/output.txt")));
+        assert!(
+            result.commands[0]
+                .resolved_paths
+                .contains(&PathBuf::from("/home/user/output.txt"))
+        );
     }
 
     #[test]

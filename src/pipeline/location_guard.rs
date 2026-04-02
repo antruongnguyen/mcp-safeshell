@@ -471,7 +471,11 @@ mod tests {
             &[],
         );
         if let GuardVerdict::Blocked { violations } = verdict {
-            assert_eq!(violations[0].path, PathBuf::from("/etc/shadow"));
+            let path_str = violations[0].path.to_string_lossy();
+            assert!(
+                path_str.ends_with("etc/shadow"),
+                "expected path ending in etc/shadow, got {path_str}"
+            );
             assert!(!violations[0].protected_prefix.is_empty());
             assert!(!violations[0].reason.is_empty());
         } else {

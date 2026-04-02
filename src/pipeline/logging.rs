@@ -271,9 +271,7 @@ mod tests {
 
     #[test]
     fn command_received_json() {
-        let event = LogEvent::CommandReceived {
-            command: "ls -la",
-        };
+        let event = LogEvent::CommandReceived { command: "ls -la" };
         let json = event.to_json();
         assert_eq!(json["event"], "COMMAND_RECEIVED");
         assert_eq!(json["command"], "ls -la");

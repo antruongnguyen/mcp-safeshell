@@ -681,7 +681,10 @@ mod tests {
 
         assert_eq!(result.details[0].command, "echo");
         assert_eq!(result.details[0].index, 0);
-        assert!(matches!(result.details[0].classification, Classification::Safe));
+        assert!(matches!(
+            result.details[0].classification,
+            Classification::Safe
+        ));
 
         assert_eq!(result.details[1].command, "rm");
         assert_eq!(result.details[1].index, 1);
@@ -692,7 +695,10 @@ mod tests {
 
         assert_eq!(result.details[2].command, "ls");
         assert_eq!(result.details[2].index, 2);
-        assert!(matches!(result.details[2].classification, Classification::Safe));
+        assert!(matches!(
+            result.details[2].classification,
+            Classification::Safe
+        ));
     }
 
     #[test]
