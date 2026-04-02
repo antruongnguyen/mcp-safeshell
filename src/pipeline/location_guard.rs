@@ -5,9 +5,9 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::platform::{self, ProtectedPath};
 use super::classifier::Classification;
 use super::parser::ParsedCommand;
+use crate::platform::{self, ProtectedPath};
 
 /// The result of a location guard check.
 #[derive(Debug, Clone)]
@@ -31,10 +31,7 @@ pub struct PathViolation {
 /// If the command classification is `Safe`, we treat the operation as read-only
 /// and allow paths where `read_allowed` is true. If `Dangerous`, we treat it as
 /// a write and block all protected paths.
-pub fn check_paths(
-    commands: &[ParsedCommand],
-    classification: &Classification,
-) -> GuardVerdict {
+pub fn check_paths(commands: &[ParsedCommand], classification: &Classification) -> GuardVerdict {
     let protected = platform::protected_paths();
     let is_read_only = matches!(classification, Classification::Safe);
     let mut violations = Vec::new();

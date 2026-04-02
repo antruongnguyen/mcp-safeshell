@@ -19,8 +19,8 @@ use rmcp::{
 };
 use serde::Deserialize;
 
-use crate::pipeline::{classifier, location_guard, parser, permission_gate};
 use crate::pipeline::logging::{self, LogEvent};
+use crate::pipeline::{classifier, location_guard, parser, permission_gate};
 use crate::platform;
 
 // ── Tool input schemas ──────────────────────────────────────────────
@@ -62,7 +62,9 @@ impl SafeShellServer {
     ///
     /// The command flows through the safety pipeline:
     /// Parse → Classify → Guard (Location) → Gate (Permission) → Execute
-    #[tool(description = "Execute a shell command with safety checks. Commands are classified as safe or dangerous, protected paths are hard-blocked, and dangerous commands require user approval.")]
+    #[tool(
+        description = "Execute a shell command with safety checks. Commands are classified as safe or dangerous, protected paths are hard-blocked, and dangerous commands require user approval."
+    )]
     async fn execute_command(
         &self,
         context: RequestContext<RoleServer>,
@@ -83,7 +85,13 @@ impl SafeShellServer {
         };
 
         // ── Stage 1: Parse ──
-        logging::log_event(&context, LogEvent::CommandReceived { command: &full_command }).await;
+        logging::log_event(
+            &context,
+            LogEvent::CommandReceived {
+                command: &full_command,
+            },
+        )
+        .await;
 
         let parsed = parser::parse(&full_command, &working_dir);
 
@@ -109,7 +117,14 @@ impl SafeShellServer {
         if let location_guard::GuardVerdict::Blocked { violations } = &guard {
             let violation_desc: Vec<String> = violations
                 .iter()
-                .map(|v| format!("{} (protected: {}, reason: {})", v.path.display(), v.protected_prefix, v.reason))
+                .map(|v| {
+                    format!(
+                        "{} (protected: {}, reason: {})",
+                        v.path.display(),
+                        v.protected_prefix,
+                        v.reason
+                    )
+                })
                 .collect();
             let violations_str = violation_desc.join("; ");
 
@@ -132,7 +147,9 @@ impl SafeShellServer {
         if let classifier::Classification::Dangerous { reason } = &classification {
             logging::log_event(
                 &context,
-                LogEvent::PermissionRequested { command: &full_command },
+                LogEvent::PermissionRequested {
+                    command: &full_command,
+                },
             )
             .await;
 
@@ -142,7 +159,9 @@ impl SafeShellServer {
                 permission_gate::GateDecision::Approved => {
                     logging::log_event(
                         &context,
-                        LogEvent::PermissionGranted { command: &full_command },
+                        LogEvent::PermissionGranted {
+                            command: &full_command,
+                        },
                     )
                     .await;
                 }
@@ -245,9 +264,15 @@ impl SafeShellServer {
     }
 
     /// Get the system PATH environment variable.
-    #[tool(description = "Get the system PATH environment variable, listing all directories where executables are found")]
+    #[tool(
+        description = "Get the system PATH environment variable, listing all directories where executables are found"
+    )]
     fn get_system_path(&self) -> Result<CallToolResult, McpError> {
-        let separator = if cfg!(target_os = "windows") { ";" } else { ":" };
+        let separator = if cfg!(target_os = "windows") {
+            ";"
+        } else {
+            ":"
+        };
         let path_var = std::env::var("PATH").unwrap_or_default();
         let entries: Vec<&str> = path_var.split(separator).collect();
 
@@ -264,7 +289,9 @@ impl SafeShellServer {
     }
 
     /// List all commands that are pre-approved for the current OS.
-    #[tool(description = "List all commands that are pre-approved as safe for the current OS. These commands execute without requiring user approval.")]
+    #[tool(
+        description = "List all commands that are pre-approved as safe for the current OS. These commands execute without requiring user approval."
+    )]
     fn list_safe_commands(&self) -> Result<CallToolResult, McpError> {
         let commands: Vec<serde_json::Value> = platform::safe_commands()
             .iter()
@@ -288,7 +315,9 @@ impl SafeShellServer {
     }
 
     /// List directories protected from command execution.
-    #[tool(description = "List directories that are protected from command execution on the current OS. Commands targeting these paths are hard-blocked.")]
+    #[tool(
+        description = "List directories that are protected from command execution on the current OS. Commands targeting these paths are hard-blocked."
+    )]
     fn list_protected_paths(&self) -> Result<CallToolResult, McpError> {
         let paths: Vec<serde_json::Value> = platform::protected_paths()
             .iter()
@@ -356,7 +385,11 @@ fn default_shell() -> String {
 /// Returns the shell flag for executing a command string.
 fn shell_flag() -> &'static str {
     #[cfg(target_os = "windows")]
-    { "/C" }
+    {
+        "/C"
+    }
     #[cfg(not(target_os = "windows"))]
-    { "-c" }
+    {
+        "-c"
+    }
 }

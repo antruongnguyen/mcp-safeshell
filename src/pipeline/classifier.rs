@@ -24,28 +24,49 @@ pub fn classify(cmd: &ParsedCommand) -> Classification {
     }
 
     // Always-dangerous: destructive file operations
-    if matches!(name, "rm" | "rmdir" | "chmod" | "chown" | "chgrp" | "mkfs" | "dd" | "shred" | "truncate") {
+    if matches!(
+        name,
+        "rm" | "rmdir" | "chmod" | "chown" | "chgrp" | "mkfs" | "dd" | "shred" | "truncate"
+    ) {
         return Classification::Dangerous {
             reason: format!("Destructive file operation: {name}"),
         };
     }
 
     // Always-dangerous: network commands
-    if matches!(name, "curl" | "wget" | "nc" | "ncat" | "netcat" | "ssh" | "scp" | "sftp" | "rsync" | "ftp") {
+    if matches!(
+        name,
+        "curl" | "wget" | "nc" | "ncat" | "netcat" | "ssh" | "scp" | "sftp" | "rsync" | "ftp"
+    ) {
         return Classification::Dangerous {
             reason: format!("Network command: {name}"),
         };
     }
 
     // Always-dangerous: package managers
-    if matches!(name, "apt" | "apt-get" | "yum" | "dnf" | "pacman" | "brew" | "choco" | "pip" | "npm" | "cargo") {
+    if matches!(
+        name,
+        "apt" | "apt-get" | "yum" | "dnf" | "pacman" | "brew" | "choco" | "pip" | "npm" | "cargo"
+    ) {
         return Classification::Dangerous {
             reason: format!("Package manager: {name}"),
         };
     }
 
     // Always-dangerous: system control
-    if matches!(name, "shutdown" | "reboot" | "halt" | "poweroff" | "init" | "systemctl" | "launchctl" | "kill" | "killall" | "pkill") {
+    if matches!(
+        name,
+        "shutdown"
+            | "reboot"
+            | "halt"
+            | "poweroff"
+            | "init"
+            | "systemctl"
+            | "launchctl"
+            | "kill"
+            | "killall"
+            | "pkill"
+    ) {
         return Classification::Dangerous {
             reason: format!("System control command: {name}"),
         };
@@ -59,7 +80,22 @@ pub fn classify(cmd: &ParsedCommand) -> Classification {
     }
 
     // Always-dangerous: shell interpreters (can run anything)
-    if matches!(name, "bash" | "sh" | "zsh" | "fish" | "csh" | "tcsh" | "dash" | "ksh" | "python" | "python3" | "perl" | "ruby" | "node") {
+    if matches!(
+        name,
+        "bash"
+            | "sh"
+            | "zsh"
+            | "fish"
+            | "csh"
+            | "tcsh"
+            | "dash"
+            | "ksh"
+            | "python"
+            | "python3"
+            | "perl"
+            | "ruby"
+            | "node"
+    ) {
         return Classification::Dangerous {
             reason: format!("Shell/interpreter: {name}"),
         };
@@ -143,6 +179,9 @@ mod tests {
     #[test]
     fn test_classify_all_mixed() {
         let cmds = vec![cmd("echo", &["hello"]), cmd("rm", &["-rf", "/tmp/x"])];
-        assert!(matches!(classify_all(&cmds), Classification::Dangerous { .. }));
+        assert!(matches!(
+            classify_all(&cmds),
+            Classification::Dangerous { .. }
+        ));
     }
 }

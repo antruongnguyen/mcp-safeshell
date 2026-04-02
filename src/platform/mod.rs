@@ -2,10 +2,10 @@
 //!
 //! Each sub-module provides `safe_commands()` and `protected_paths()` for the target OS.
 
-#[cfg(target_os = "macos")]
-mod macos;
 #[cfg(target_os = "linux")]
 mod linux;
+#[cfg(target_os = "macos")]
+mod macos;
 #[cfg(target_os = "windows")]
 mod windows;
 
@@ -29,31 +29,49 @@ pub struct ProtectedPath {
 /// Returns the safe command list for the current OS.
 pub fn safe_commands() -> &'static [SafeCommand] {
     #[cfg(target_os = "macos")]
-    { macos::SAFE_COMMANDS }
+    {
+        macos::SAFE_COMMANDS
+    }
     #[cfg(target_os = "linux")]
-    { linux::SAFE_COMMANDS }
+    {
+        linux::SAFE_COMMANDS
+    }
     #[cfg(target_os = "windows")]
-    { windows::SAFE_COMMANDS }
+    {
+        windows::SAFE_COMMANDS
+    }
 }
 
 /// Returns the protected path list for the current OS.
 pub fn protected_paths() -> &'static [ProtectedPath] {
     #[cfg(target_os = "macos")]
-    { macos::PROTECTED_PATHS }
+    {
+        macos::PROTECTED_PATHS
+    }
     #[cfg(target_os = "linux")]
-    { linux::PROTECTED_PATHS }
+    {
+        linux::PROTECTED_PATHS
+    }
     #[cfg(target_os = "windows")]
-    { windows::PROTECTED_PATHS }
+    {
+        windows::PROTECTED_PATHS
+    }
 }
 
 /// Returns the OS name string.
 pub fn os_name() -> &'static str {
     #[cfg(target_os = "macos")]
-    { "macos" }
+    {
+        "macos"
+    }
     #[cfg(target_os = "linux")]
-    { "linux" }
+    {
+        "linux"
+    }
     #[cfg(target_os = "windows")]
-    { "windows" }
+    {
+        "windows"
+    }
 }
 
 /// Returns the architecture string.

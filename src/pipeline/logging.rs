@@ -7,15 +7,41 @@ use rmcp::service::{RequestContext, RoleServer};
 
 /// Log event types corresponding to pipeline stages.
 pub enum LogEvent<'a> {
-    CommandReceived { command: &'a str },
-    CommandClassified { command: &'a str, classification: &'a str, reason: &'a str },
-    PathGuardBlocked { command: &'a str, violations: &'a str },
-    PermissionRequested { command: &'a str },
-    PermissionGranted { command: &'a str },
-    PermissionDenied { command: &'a str, reason: &'a str },
-    CommandExecuted { command: &'a str, exit_code: i32, duration_ms: u64 },
-    CommandTimeout { command: &'a str, timeout_secs: u64 },
-    CommandError { command: &'a str, error: &'a str },
+    CommandReceived {
+        command: &'a str,
+    },
+    CommandClassified {
+        command: &'a str,
+        classification: &'a str,
+        reason: &'a str,
+    },
+    PathGuardBlocked {
+        command: &'a str,
+        violations: &'a str,
+    },
+    PermissionRequested {
+        command: &'a str,
+    },
+    PermissionGranted {
+        command: &'a str,
+    },
+    PermissionDenied {
+        command: &'a str,
+        reason: &'a str,
+    },
+    CommandExecuted {
+        command: &'a str,
+        exit_code: i32,
+        duration_ms: u64,
+    },
+    CommandTimeout {
+        command: &'a str,
+        timeout_secs: u64,
+    },
+    CommandError {
+        command: &'a str,
+        error: &'a str,
+    },
 }
 
 impl<'a> LogEvent<'a> {
@@ -51,13 +77,20 @@ impl<'a> LogEvent<'a> {
                 "event": "COMMAND_RECEIVED",
                 "command": command,
             }),
-            LogEvent::CommandClassified { command, classification, reason } => serde_json::json!({
+            LogEvent::CommandClassified {
+                command,
+                classification,
+                reason,
+            } => serde_json::json!({
                 "event": "COMMAND_CLASSIFIED",
                 "command": command,
                 "classification": classification,
                 "reason": reason,
             }),
-            LogEvent::PathGuardBlocked { command, violations } => serde_json::json!({
+            LogEvent::PathGuardBlocked {
+                command,
+                violations,
+            } => serde_json::json!({
                 "event": "PATH_GUARD_BLOCKED",
                 "command": command,
                 "violations": violations,
@@ -75,13 +108,20 @@ impl<'a> LogEvent<'a> {
                 "command": command,
                 "reason": reason,
             }),
-            LogEvent::CommandExecuted { command, exit_code, duration_ms } => serde_json::json!({
+            LogEvent::CommandExecuted {
+                command,
+                exit_code,
+                duration_ms,
+            } => serde_json::json!({
                 "event": "COMMAND_EXECUTED",
                 "command": command,
                 "exit_code": exit_code,
                 "duration_ms": duration_ms,
             }),
-            LogEvent::CommandTimeout { command, timeout_secs } => serde_json::json!({
+            LogEvent::CommandTimeout {
+                command,
+                timeout_secs,
+            } => serde_json::json!({
                 "event": "COMMAND_TIMEOUT",
                 "command": command,
                 "timeout_secs": timeout_secs,
@@ -102,7 +142,10 @@ pub async fn log_event(context: &RequestContext<RoleServer>, event: LogEvent<'_>
 
     // Local tracing log
     match level {
-        LoggingLevel::Error | LoggingLevel::Critical | LoggingLevel::Alert | LoggingLevel::Emergency => {
+        LoggingLevel::Error
+        | LoggingLevel::Critical
+        | LoggingLevel::Alert
+        | LoggingLevel::Emergency => {
             tracing::error!(event = %data, "pipeline");
         }
         LoggingLevel::Warning => {

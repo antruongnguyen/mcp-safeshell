@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 
 /// A single parsed sub-command within a pipeline or chain.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct ParsedCommand {
     /// The base command name (e.g. "rm", "ls").
     pub command: String,
@@ -70,7 +71,9 @@ fn split_chain(input: &str) -> Vec<&str> {
         }
 
         // Check for `&&` or `||`
-        if i + 1 < len && ((ch == b'&' && bytes[i + 1] == b'&') || (ch == b'|' && bytes[i + 1] == b'|')) {
+        if i + 1 < len
+            && ((ch == b'&' && bytes[i + 1] == b'&') || (ch == b'|' && bytes[i + 1] == b'|'))
+        {
             segments.push(&input[start..i]);
             i += 2;
             start = i;
@@ -138,10 +141,8 @@ fn tokenize(input: &str) -> Vec<String> {
             // Skip redirection operators and their targets
             if ch == '>' || ch == '<' {
                 // Consume >> if present
-                if ch == '>' {
-                    if chars.peek() == Some(&'>') {
-                        chars.next();
-                    }
+                if ch == '>' && chars.peek() == Some(&'>') {
+                    chars.next();
                 }
                 // Skip whitespace after redirection
                 while chars.peek() == Some(&' ') {
@@ -153,10 +154,18 @@ fn tokenize(input: &str) -> Vec<String> {
                 loop {
                     match chars.peek() {
                         None => break,
-                        Some(&'\'') if !in_dq => { in_sq = !in_sq; chars.next(); }
-                        Some(&'"') if !in_sq => { in_dq = !in_dq; chars.next(); }
+                        Some(&'\'') if !in_dq => {
+                            in_sq = !in_sq;
+                            chars.next();
+                        }
+                        Some(&'"') if !in_sq => {
+                            in_dq = !in_dq;
+                            chars.next();
+                        }
                         Some(&' ') if !in_sq && !in_dq => break,
-                        _ => { chars.next(); }
+                        _ => {
+                            chars.next();
+                        }
                     }
                 }
                 continue;
@@ -174,7 +183,9 @@ fn tokenize(input: &str) -> Vec<String> {
                     match chars.peek() {
                         None => break,
                         Some(&' ') => break,
-                        _ => { chars.next(); }
+                        _ => {
+                            chars.next();
+                        }
                     }
                 }
                 continue;
