@@ -1,0 +1,25 @@
+[package]
+name = "safeshell-mcp"
+version = "0.1.0"
+edition = "2024"
+authors = ["An Nguyen <annguyen.apss@gmail.com>"]
+description = "A safety-first shell command executor MCP server"
+license = "MIT"
+
+[dependencies]
+rmcp = { version = "0.16", features = ["server", "transport-io", "transport-streamable-http-server"] }
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+schemars = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+thiserror = "2"
+dirs = "6"
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"

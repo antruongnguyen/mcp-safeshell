@@ -1,0 +1,20 @@
+# Build artifacts
+/target
+
+# Cargo lock is committed for binary crates
+# Cargo.lock
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+.env.local
