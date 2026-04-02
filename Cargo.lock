@@ -1045,6 +1045,7 @@ dependencies = [
  "anyhow",
  "axum",
  "dirs",
+ "libc",
  "regex",
  "rmcp",
  "schemars",

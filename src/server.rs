@@ -27,6 +27,7 @@ use crate::pipeline::logging::{self, LogEvent};
 use crate::pipeline::{classifier, location_guard, parser, permission_gate};
 use crate::platform;
 use crate::sanitizer::Sanitizer;
+use crate::shutdown::ChildTracker;
 
 // ── Tool input schemas ──────────────────────────────────────────────
 
@@ -53,17 +54,24 @@ pub struct SafeShellServer {
     config: Arc<Config>,
     sanitizer: Arc<Sanitizer>,
     concurrency: Arc<Semaphore>,
+    child_tracker: Arc<ChildTracker>,
     tool_router: ToolRouter<SafeShellServer>,
 }
 
 impl SafeShellServer {
+    #[allow(dead_code)] // Used in tests; main.rs uses with_child_tracker directly
     pub fn new(config: Config) -> Self {
+        Self::with_child_tracker(config, Arc::new(ChildTracker::new()))
+    }
+
+    pub fn with_child_tracker(config: Config, child_tracker: Arc<ChildTracker>) -> Self {
         let max_conc = config.max_concurrency.max(1);
         let sanitizer = Sanitizer::new(&config.redact_env_patterns);
         Self {
             config: Arc::new(config),
             sanitizer: Arc::new(sanitizer),
             concurrency: Arc::new(Semaphore::new(max_conc)),
+            child_tracker,
             tool_router: Self::tool_router(),
         }
     }
@@ -250,14 +258,32 @@ impl SafeShellServer {
 
         let result = tokio::time::timeout(
             std::time::Duration::from_secs(timeout_secs),
-            tokio::process::Command::new(&shell)
-                .arg(&shell_flag)
-                .arg(&full_command)
-                .current_dir(&working_dir)
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .stdin(Stdio::null())
-                .output(),
+            async {
+                let child = tokio::process::Command::new(&shell)
+                    .arg(&shell_flag)
+                    .arg(&full_command)
+                    .current_dir(&working_dir)
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped())
+                    .stdin(Stdio::null())
+                    .spawn()
+                    .map_err(std::io::Error::from)?;
+
+                // Track the child PID so it can be killed on shutdown.
+                let pid = child.id();
+                if let Some(pid) = pid {
+                    self.child_tracker.add(pid);
+                }
+
+                let output = child.wait_with_output().await;
+
+                // Untrack after the process exits.
+                if let Some(pid) = pid {
+                    self.child_tracker.remove(pid);
+                }
+
+                output
+            },
         )
         .await;
 
