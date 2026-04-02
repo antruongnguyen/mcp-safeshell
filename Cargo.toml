@@ -18,7 +18,7 @@ tracing-appender = "0.2"
 thiserror = "2"
 dirs = "6"
 anyhow = "1"
-toml = "0.8"
+toml = "1.1"
 regex = "1"
 tokio-util = { version = "0.7", features = ["rt"] }
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
