@@ -177,17 +177,35 @@ SafeShell implements defense-in-depth with multiple independent layers:
 
 Every command is classified against a built-in allowlist. Commands explicitly listed as safe execute immediately. Everything else — including unknown commands — is classified as **dangerous** and requires user approval.
 
-**Always-dangerous categories** (cannot be overridden by `additional_safe_commands`):
+Dangerous commands are further divided into two tiers:
+
+#### Tier 1: Catastrophic (NEVER whitelistable)
+
+These commands are too destructive to ever be auto-approved. Even if added to `additional_safe_commands`, they are **ignored** and a warning is logged.
 
 | Category | Commands |
 |----------|----------|
-| Privilege escalation | `sudo`, `doas`, `su`, `runas`, `pkexec` |
-| Destructive file ops | `rm`, `rmdir`, `chmod`, `chown`, `chgrp`, `mkfs`, `dd`, `shred`, `truncate` |
+| Privilege escalation | `sudo`, `su`, `doas`, `pkexec`, `runas` |
+| Disk destruction | `mkfs`, `dd`, `shred`, `fdisk`, `parted`, `lvm` |
+| System control | `shutdown`, `reboot`, `halt`, `poweroff`, `init` |
+
+#### Tier 2: Whitelistable dangerous
+
+These are dangerous but legitimate developer tools. They can be pre-approved via `additional_safe_commands` in config or `SAFESHELL_SAFE_COMMANDS` env var. This is useful when your MCP client does not support elicitation.
+
+| Category | Commands |
+|----------|----------|
+| File operations | `rm`, `rmdir`, `chmod`, `chown`, `chgrp`, `truncate` |
 | Network commands | `curl`, `wget`, `nc`, `ncat`, `netcat`, `ssh`, `scp`, `sftp`, `rsync`, `ftp` |
 | Package managers | `apt`, `apt-get`, `yum`, `dnf`, `pacman`, `brew`, `choco`, `pip`, `npm`, `cargo` |
-| System control | `shutdown`, `reboot`, `halt`, `poweroff`, `init`, `systemctl`, `launchctl`, `kill`, `killall`, `pkill` |
-| Disk operations | `mount`, `umount`, `fdisk`, `parted`, `lvm` |
+| System services | `systemctl`, `launchctl`, `kill`, `killall`, `pkill`, `mount`, `umount` |
 | Shell interpreters | `bash`, `sh`, `zsh`, `fish`, `csh`, `tcsh`, `dash`, `ksh`, `python`, `python3`, `perl`, `ruby`, `node` |
+
+When a whitelisted Tier 2 command executes, the tool response includes an annotation:
+
+> ⚠️ Pre-approved via additional_safe_commands configuration. No interactive approval was requested.
+
+When a non-whitelisted dangerous command is denied because elicitation is unavailable, the denial message includes instructions on how to pre-approve it.
 
 For chained commands (`ls | grep foo && rm file`), each sub-command is classified independently. If **any** sub-command is dangerous, the entire chain requires approval. The approval prompt shows per-sub-command classification details.
 
@@ -287,7 +305,7 @@ read_allowed = false
 | `default_timeout_seconds` | `30` | Max execution time per command |
 | `max_output_bytes` | `102400` (100 KB) | Max bytes per output stream before truncation |
 | `max_concurrency` | `1` | Max simultaneous command executions |
-| `additional_safe_commands` | `[]` | Extra commands to treat as safe (inherently dangerous commands like `rm`, `sudo`, `curl` cannot be overridden; a warning is logged if attempted) |
+| `additional_safe_commands` | `[]` | Extra commands to treat as safe (Tier 1 catastrophic commands like `sudo`, `dd`, `shutdown` cannot be overridden; Tier 2 commands like `rm`, `curl`, `npm` can be whitelisted) |
 | `additional_protected_paths` | `[]` | Extra directories to protect |
 | `redact_env_patterns` | `[]` | Extra regex patterns for sensitive env var names |
 | `shell` | auto-detect | Shell binary for execution |
@@ -309,7 +327,7 @@ Individual config fields can be overridden via `SAFESHELL_*` environment variabl
 | `SAFESHELL_HTTP_BIND` | `http_bind` | HTTP listen address |
 | `SAFESHELL_LOG_LEVEL` | `log_level` | Log filter string |
 | `SAFESHELL_LOG_FILE` | `log_file` | Log file path |
-| `SAFESHELL_SAFE_COMMANDS` | `additional_safe_commands` | Comma-separated list of additional safe commands (inherently dangerous commands cannot be overridden) |
+| `SAFESHELL_SAFE_COMMANDS` | `additional_safe_commands` | Comma-separated list of additional safe commands (Tier 1 catastrophic commands cannot be overridden) |
 | `SAFESHELL_REDACT_PATTERNS` | `redact_env_patterns` | Comma-separated list of regex patterns for env var redaction |
 | `RUST_LOG` | — | Log level filter (overridden by `log_level` / `SAFESHELL_LOG_LEVEL`) |
 | `SHELL` (Unix) | — | Default shell when `shell` is not set |

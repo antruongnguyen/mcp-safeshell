@@ -38,22 +38,48 @@ pub struct ChainClassification {
     pub details: Vec<SubCommandClassification>,
     /// Whether this was a chained command (more than one sub-command).
     pub is_chained: bool,
+    /// Commands that were pre-approved via `additional_safe_commands` (Tier 2
+    /// dangerous commands that the user has whitelisted).
+    pub preapproved_commands: Vec<String>,
+}
+
+/// Returns `true` if the command is **catastrophic** (Tier 1) — too destructive
+/// to ever be auto-approved via `additional_safe_commands`.
+///
+/// Tier 1 commands: privilege escalation, disk destruction, system control.
+pub fn is_catastrophic(name: &str) -> bool {
+    // Privilege escalation
+    if matches!(name, "sudo" | "su" | "doas" | "pkexec" | "runas") {
+        return true;
+    }
+    // Disk destruction
+    if matches!(name, "mkfs" | "dd" | "shred" | "fdisk" | "parted" | "lvm") {
+        return true;
+    }
+    // System control
+    if matches!(name, "shutdown" | "reboot" | "halt" | "poweroff" | "init") {
+        return true;
+    }
+    false
 }
 
 /// Returns `true` if the command name belongs to a hardcoded always-dangerous
 /// category (privilege escalation, destructive file ops, network, package
 /// managers, system control, disk ops, shell interpreters).
 ///
-/// These commands must NEVER be overridden by `additional_safe_commands`.
+/// This covers both Tier 1 (catastrophic) and Tier 2 (whitelistable) commands.
+/// Use `is_catastrophic()` to check only Tier 1.
+#[allow(dead_code)]
 pub fn is_always_dangerous(name: &str) -> bool {
-    // Privilege escalation
-    if matches!(name, "sudo" | "doas" | "su" | "runas" | "pkexec") {
+    // Tier 1: catastrophic (never whitelistable)
+    if is_catastrophic(name) {
         return true;
     }
+    // Tier 2: whitelistable dangerous commands
     // Destructive file operations
     if matches!(
         name,
-        "rm" | "rmdir" | "chmod" | "chown" | "chgrp" | "mkfs" | "dd" | "shred" | "truncate"
+        "rm" | "rmdir" | "chmod" | "chown" | "chgrp" | "truncate"
     ) {
         return true;
     }
@@ -71,24 +97,11 @@ pub fn is_always_dangerous(name: &str) -> bool {
     ) {
         return true;
     }
-    // System control
+    // System services and process control
     if matches!(
         name,
-        "shutdown"
-            | "reboot"
-            | "halt"
-            | "poweroff"
-            | "init"
-            | "systemctl"
-            | "launchctl"
-            | "kill"
-            | "killall"
-            | "pkill"
+        "systemctl" | "launchctl" | "kill" | "killall" | "pkill" | "mount" | "umount"
     ) {
-        return true;
-    }
-    // Disk/mount operations
-    if matches!(name, "mount" | "umount" | "fdisk" | "parted" | "lvm") {
         return true;
     }
     // Shell interpreters
@@ -228,21 +241,24 @@ pub fn classify_chain(
 ) -> ChainClassification {
     let mut details = Vec::with_capacity(cmds.len());
     let mut aggregate_reasons = Vec::new();
+    let mut preapproved_commands = Vec::new();
 
     for (index, cmd) in cmds.iter().enumerate() {
         let mut classification = classify(cmd);
 
         // Override if command is in the additional safe list, but NEVER
-        // override commands that are inherently always-dangerous.
+        // override Tier 1 (catastrophic) commands.
         if matches!(classification, Classification::Dangerous { .. })
             && additional_safe.iter().any(|s| s == &cmd.command)
         {
-            if is_always_dangerous(&cmd.command) {
+            if is_catastrophic(&cmd.command) {
                 tracing::warn!(
                     command = %cmd.command,
-                    "ignoring additional_safe_commands override for inherently dangerous command"
+                    "ignoring additional_safe_commands override for catastrophic command \
+                     (Tier 1: privilege escalation, disk destruction, or system control)"
                 );
             } else {
+                preapproved_commands.push(cmd.command.clone());
                 classification = Classification::Safe;
             }
         }
@@ -271,6 +287,7 @@ pub fn classify_chain(
         aggregate,
         details,
         is_chained,
+        preapproved_commands,
     }
 }
 
@@ -862,23 +879,42 @@ mod tests {
     }
 
     #[test]
-    fn additional_safe_does_not_override_all_dangerous() {
-        // Even when both dangerous commands are in additional_safe, always-dangerous
-        // commands (curl, rm) cannot be overridden
-        let cmds = vec![cmd("curl", &["url"]), cmd("rm", &["file"])];
-        let additional = vec!["curl".to_string(), "rm".to_string()];
+    fn additional_safe_does_not_override_catastrophic() {
+        // Catastrophic (Tier 1) commands cannot be overridden even when in additional_safe
+        let cmds = vec![cmd("sudo", &["ls"]), cmd("dd", &["if=/dev/zero"])];
+        let additional = vec!["sudo".to_string(), "dd".to_string()];
         let result = classify_chain(&cmds, &additional, true);
         assert!(matches!(result.aggregate, Classification::Dangerous { .. }));
-        // curl is always-dangerous — must stay dangerous
+        // sudo is catastrophic — must stay dangerous
         assert!(matches!(
             result.details[0].classification,
             Classification::Dangerous { .. }
         ));
-        // rm is always-dangerous — must stay dangerous
+        // dd is catastrophic — must stay dangerous
         assert!(matches!(
             result.details[1].classification,
             Classification::Dangerous { .. }
         ));
+        // No pre-approved commands
+        assert!(result.preapproved_commands.is_empty());
+    }
+
+    #[test]
+    fn tier2_commands_overridable_via_additional_safe() {
+        // Tier 2 (whitelistable) dangerous commands CAN be overridden
+        let cmds = vec![cmd("curl", &["url"]), cmd("rm", &["file"])];
+        let additional = vec!["curl".to_string(), "rm".to_string()];
+        let result = classify_chain(&cmds, &additional, true);
+        assert!(matches!(result.aggregate, Classification::Safe));
+        assert!(matches!(
+            result.details[0].classification,
+            Classification::Safe
+        ));
+        assert!(matches!(
+            result.details[1].classification,
+            Classification::Safe
+        ));
+        assert_eq!(result.preapproved_commands, vec!["curl", "rm"]);
     }
 
     #[test]
@@ -888,62 +924,138 @@ mod tests {
         assert_eq!(result.details[0].raw, "echo hello world");
     }
 
-    // ── Always-dangerous commands cannot be overridden ─────────────
+    // ── Tier 1 (catastrophic) commands cannot be overridden ─────
 
     #[test]
-    fn always_dangerous_rm_not_overridable() {
-        let cmds = vec![cmd("rm", &["-rf", "/tmp/x"])];
-        let additional = vec!["rm".to_string()];
-        let result = classify_chain(&cmds, &additional, false);
-        assert!(matches!(result.aggregate, Classification::Dangerous { .. }));
-    }
-
-    #[test]
-    fn always_dangerous_sudo_not_overridable() {
+    fn catastrophic_sudo_not_overridable() {
         let cmds = vec![cmd("sudo", &["ls"])];
         let additional = vec!["sudo".to_string()];
         let result = classify_chain(&cmds, &additional, false);
         assert!(matches!(result.aggregate, Classification::Dangerous { .. }));
+        assert!(result.preapproved_commands.is_empty());
     }
 
     #[test]
-    fn always_dangerous_curl_not_overridable() {
+    fn catastrophic_dd_not_overridable() {
+        let cmds = vec![cmd("dd", &["if=/dev/zero", "of=/dev/sda"])];
+        let additional = vec!["dd".to_string()];
+        let result = classify_chain(&cmds, &additional, false);
+        assert!(matches!(result.aggregate, Classification::Dangerous { .. }));
+        assert!(result.preapproved_commands.is_empty());
+    }
+
+    #[test]
+    fn catastrophic_mkfs_not_overridable() {
+        let cmds = vec![cmd("mkfs", &["/dev/sda1"])];
+        let additional = vec!["mkfs".to_string()];
+        let result = classify_chain(&cmds, &additional, false);
+        assert!(matches!(result.aggregate, Classification::Dangerous { .. }));
+    }
+
+    #[test]
+    fn catastrophic_shutdown_not_overridable() {
+        let cmds = vec![cmd("shutdown", &["-h", "now"])];
+        let additional = vec!["shutdown".to_string()];
+        let result = classify_chain(&cmds, &additional, false);
+        assert!(matches!(result.aggregate, Classification::Dangerous { .. }));
+    }
+
+    #[test]
+    fn catastrophic_shred_not_overridable() {
+        let cmds = vec![cmd("shred", &["file"])];
+        let additional = vec!["shred".to_string()];
+        let result = classify_chain(&cmds, &additional, false);
+        assert!(matches!(result.aggregate, Classification::Dangerous { .. }));
+    }
+
+    #[test]
+    fn catastrophic_fdisk_not_overridable() {
+        let cmds = vec![cmd("fdisk", &["/dev/sda"])];
+        let additional = vec!["fdisk".to_string()];
+        let result = classify_chain(&cmds, &additional, false);
+        assert!(matches!(result.aggregate, Classification::Dangerous { .. }));
+    }
+
+    #[test]
+    fn catastrophic_reboot_not_overridable() {
+        let cmds = vec![cmd("reboot", &[])];
+        let additional = vec!["reboot".to_string()];
+        let result = classify_chain(&cmds, &additional, false);
+        assert!(matches!(result.aggregate, Classification::Dangerous { .. }));
+    }
+
+    // ── Tier 2 (whitelistable) commands CAN be overridden ─────
+
+    #[test]
+    fn tier2_rm_overridable() {
+        let cmds = vec![cmd("rm", &["-rf", "/tmp/x"])];
+        let additional = vec!["rm".to_string()];
+        let result = classify_chain(&cmds, &additional, false);
+        assert!(matches!(result.aggregate, Classification::Safe));
+        assert_eq!(result.preapproved_commands, vec!["rm"]);
+    }
+
+    #[test]
+    fn tier2_curl_overridable() {
         let cmds = vec![cmd("curl", &["example.com"])];
         let additional = vec!["curl".to_string()];
         let result = classify_chain(&cmds, &additional, false);
-        assert!(matches!(result.aggregate, Classification::Dangerous { .. }));
+        assert!(matches!(result.aggregate, Classification::Safe));
+        assert_eq!(result.preapproved_commands, vec!["curl"]);
     }
 
     #[test]
-    fn always_dangerous_kill_not_overridable() {
+    fn tier2_kill_overridable() {
         let cmds = vec![cmd("kill", &["-9", "1234"])];
         let additional = vec!["kill".to_string()];
         let result = classify_chain(&cmds, &additional, false);
-        assert!(matches!(result.aggregate, Classification::Dangerous { .. }));
+        assert!(matches!(result.aggregate, Classification::Safe));
+        assert_eq!(result.preapproved_commands, vec!["kill"]);
     }
 
     #[test]
-    fn always_dangerous_bash_not_overridable() {
+    fn tier2_bash_overridable() {
         let cmds = vec![cmd("bash", &["-c", "echo hi"])];
         let additional = vec!["bash".to_string()];
         let result = classify_chain(&cmds, &additional, false);
-        assert!(matches!(result.aggregate, Classification::Dangerous { .. }));
+        assert!(matches!(result.aggregate, Classification::Safe));
+        assert_eq!(result.preapproved_commands, vec!["bash"]);
     }
 
     #[test]
-    fn always_dangerous_npm_not_overridable() {
+    fn tier2_npm_overridable() {
         let cmds = vec![cmd("npm", &["install"])];
         let additional = vec!["npm".to_string()];
         let result = classify_chain(&cmds, &additional, false);
-        assert!(matches!(result.aggregate, Classification::Dangerous { .. }));
+        assert!(matches!(result.aggregate, Classification::Safe));
+        assert_eq!(result.preapproved_commands, vec!["npm"]);
     }
 
     #[test]
-    fn always_dangerous_mount_not_overridable() {
+    fn tier2_mount_overridable() {
         let cmds = vec![cmd("mount", &["/dev/sda1", "/mnt"])];
         let additional = vec!["mount".to_string()];
         let result = classify_chain(&cmds, &additional, false);
-        assert!(matches!(result.aggregate, Classification::Dangerous { .. }));
+        assert!(matches!(result.aggregate, Classification::Safe));
+        assert_eq!(result.preapproved_commands, vec!["mount"]);
+    }
+
+    #[test]
+    fn tier2_python3_overridable() {
+        let cmds = vec![cmd("python3", &["script.py"])];
+        let additional = vec!["python3".to_string()];
+        let result = classify_chain(&cmds, &additional, false);
+        assert!(matches!(result.aggregate, Classification::Safe));
+        assert_eq!(result.preapproved_commands, vec!["python3"]);
+    }
+
+    #[test]
+    fn tier2_cargo_overridable() {
+        let cmds = vec![cmd("cargo", &["build"])];
+        let additional = vec!["cargo".to_string()];
+        let result = classify_chain(&cmds, &additional, false);
+        assert!(matches!(result.aggregate, Classification::Safe));
+        assert_eq!(result.preapproved_commands, vec!["cargo"]);
     }
 
     #[test]
@@ -956,53 +1068,107 @@ mod tests {
     }
 
     #[test]
-    fn mixed_always_dangerous_and_overridable() {
-        // Chain with one always-dangerous (rm) and one overridable unknown command
-        let cmds = vec![cmd("my_tool", &[]), cmd("rm", &["file"])];
-        let additional = vec!["my_tool".to_string(), "rm".to_string()];
+    fn mixed_catastrophic_and_tier2_overridable() {
+        // Chain with one catastrophic (sudo) and one Tier 2 overridable (rm)
+        let cmds = vec![cmd("rm", &["file"]), cmd("sudo", &["ls"])];
+        let additional = vec!["rm".to_string(), "sudo".to_string()];
         let result = classify_chain(&cmds, &additional, true);
-        // my_tool gets overridden to safe
+        // rm is Tier 2, gets overridden to safe
         assert!(matches!(
             result.details[0].classification,
             Classification::Safe
         ));
-        // rm stays dangerous
+        // sudo is catastrophic, stays dangerous
         assert!(matches!(
             result.details[1].classification,
             Classification::Dangerous { .. }
         ));
-        // aggregate is dangerous
+        // aggregate is dangerous because of sudo
         assert!(matches!(result.aggregate, Classification::Dangerous { .. }));
+        // only rm was pre-approved
+        assert_eq!(result.preapproved_commands, vec!["rm"]);
     }
 
-    // ── is_always_dangerous ───────────────────────────────────────
+    // ── is_catastrophic (Tier 1) ───────────────────────────────
+
+    #[test]
+    fn is_catastrophic_privilege_escalation() {
+        assert!(is_catastrophic("sudo"));
+        assert!(is_catastrophic("su"));
+        assert!(is_catastrophic("doas"));
+        assert!(is_catastrophic("pkexec"));
+        assert!(is_catastrophic("runas"));
+    }
+
+    #[test]
+    fn is_catastrophic_disk_destruction() {
+        assert!(is_catastrophic("mkfs"));
+        assert!(is_catastrophic("dd"));
+        assert!(is_catastrophic("shred"));
+        assert!(is_catastrophic("fdisk"));
+        assert!(is_catastrophic("parted"));
+        assert!(is_catastrophic("lvm"));
+    }
+
+    #[test]
+    fn is_catastrophic_system_control() {
+        assert!(is_catastrophic("shutdown"));
+        assert!(is_catastrophic("reboot"));
+        assert!(is_catastrophic("halt"));
+        assert!(is_catastrophic("poweroff"));
+        assert!(is_catastrophic("init"));
+    }
+
+    #[test]
+    fn is_catastrophic_false_for_tier2() {
+        // Tier 2 commands are NOT catastrophic
+        assert!(!is_catastrophic("rm"));
+        assert!(!is_catastrophic("curl"));
+        assert!(!is_catastrophic("npm"));
+        assert!(!is_catastrophic("bash"));
+        assert!(!is_catastrophic("kill"));
+        assert!(!is_catastrophic("mount"));
+        assert!(!is_catastrophic("python3"));
+        assert!(!is_catastrophic("cargo"));
+        assert!(!is_catastrophic("chmod"));
+        assert!(!is_catastrophic("wget"));
+        assert!(!is_catastrophic("systemctl"));
+    }
+
+    #[test]
+    fn is_catastrophic_false_for_safe_and_unknown() {
+        assert!(!is_catastrophic("echo"));
+        assert!(!is_catastrophic("ls"));
+        assert!(!is_catastrophic("cat"));
+        assert!(!is_catastrophic("my_custom_tool"));
+        assert!(!is_catastrophic("git"));
+    }
+
+    // ── is_always_dangerous (both tiers) ─────────────────────
 
     #[test]
     fn is_always_dangerous_covers_all_categories() {
-        // Privilege escalation
+        // Tier 1: catastrophic
         assert!(is_always_dangerous("sudo"));
         assert!(is_always_dangerous("doas"));
         assert!(is_always_dangerous("su"));
-        // Destructive file ops
-        assert!(is_always_dangerous("rm"));
         assert!(is_always_dangerous("dd"));
         assert!(is_always_dangerous("shred"));
-        // Network
+        assert!(is_always_dangerous("mkfs"));
+        assert!(is_always_dangerous("shutdown"));
+        assert!(is_always_dangerous("reboot"));
+        assert!(is_always_dangerous("fdisk"));
+        // Tier 2: whitelistable
+        assert!(is_always_dangerous("rm"));
         assert!(is_always_dangerous("curl"));
         assert!(is_always_dangerous("wget"));
         assert!(is_always_dangerous("ssh"));
-        // Package managers
         assert!(is_always_dangerous("apt"));
         assert!(is_always_dangerous("brew"));
         assert!(is_always_dangerous("cargo"));
-        // System control
-        assert!(is_always_dangerous("shutdown"));
         assert!(is_always_dangerous("kill"));
         assert!(is_always_dangerous("systemctl"));
-        // Disk ops
         assert!(is_always_dangerous("mount"));
-        assert!(is_always_dangerous("fdisk"));
-        // Shell interpreters
         assert!(is_always_dangerous("bash"));
         assert!(is_always_dangerous("python3"));
         assert!(is_always_dangerous("node"));
@@ -1015,5 +1181,30 @@ mod tests {
         assert!(!is_always_dangerous("cat"));
         assert!(!is_always_dangerous("my_custom_tool"));
         assert!(!is_always_dangerous("git"));
+    }
+
+    // ── preapproved_commands tracking ────────────────────────
+
+    #[test]
+    fn preapproved_commands_empty_when_no_overrides() {
+        let cmds = vec![cmd("echo", &["hello"]), cmd("rm", &["file"])];
+        let result = classify_chain(&cmds, &[], true);
+        assert!(result.preapproved_commands.is_empty());
+    }
+
+    #[test]
+    fn preapproved_commands_tracks_overridden_unknown() {
+        let cmds = vec![cmd("my_tool", &["--flag"])];
+        let additional = vec!["my_tool".to_string()];
+        let result = classify_chain(&cmds, &additional, false);
+        assert_eq!(result.preapproved_commands, vec!["my_tool"]);
+    }
+
+    #[test]
+    fn preapproved_commands_not_set_for_catastrophic() {
+        let cmds = vec![cmd("sudo", &["ls"])];
+        let additional = vec!["sudo".to_string()];
+        let result = classify_chain(&cmds, &additional, false);
+        assert!(result.preapproved_commands.is_empty());
     }
 }

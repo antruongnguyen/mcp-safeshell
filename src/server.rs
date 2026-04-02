@@ -130,6 +130,7 @@ impl SafeShellServer {
             parsed.is_chained,
         );
         let classification = chain_result.aggregate.clone();
+        let preapproved_commands = chain_result.preapproved_commands.clone();
         let (class_str, class_reason) = match &classification {
             classifier::Classification::Safe => ("safe", String::new()),
             classifier::Classification::Dangerous { reason } => ("dangerous", reason.clone()),
@@ -244,9 +245,19 @@ impl SafeShellServer {
                     )
                     .await;
 
-                    return Ok(CallToolResult::error(vec![Content::text(format!(
-                        "DENIED: {reason}"
-                    ))]));
+                    let deny_msg = if reason.contains("Elicitation not supported") {
+                        format!(
+                            "DENIED: {reason}\n\n\
+                             This command requires approval. Pre-approve it via \
+                             additional_safe_commands in safeshell.toml or \
+                             SAFESHELL_SAFE_COMMANDS env var, or use an MCP client \
+                             that supports elicitation."
+                        )
+                    } else {
+                        format!("DENIED: {reason}")
+                    };
+
+                    return Ok(CallToolResult::error(vec![Content::text(deny_msg)]));
                 }
             }
         }
@@ -323,6 +334,14 @@ impl SafeShellServer {
                         text.push_str("\n[OUTPUT TRUNCATED]");
                     }
                     parts.push(Content::text(text));
+                }
+
+                if !preapproved_commands.is_empty() {
+                    parts.push(Content::text(format!(
+                        "\u{26a0}\u{fe0f} Pre-approved via additional_safe_commands configuration: {}. \
+                         No interactive approval was requested.",
+                        preapproved_commands.join(", ")
+                    )));
                 }
 
                 if exit_code == 0 {
