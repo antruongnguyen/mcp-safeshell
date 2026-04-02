@@ -114,12 +114,22 @@ pub fn classify(cmd: &ParsedCommand) -> Classification {
 
 /// Classify all sub-commands. Returns the most restrictive classification
 /// (if any is Dangerous, the whole chain is Dangerous).
-pub fn classify_all(cmds: &[ParsedCommand]) -> Classification {
+///
+/// `additional_safe` lists extra command names (from config) that should be
+/// treated as safe beyond the built-in platform allowlist.
+pub fn classify_all(cmds: &[ParsedCommand], additional_safe: &[String]) -> Classification {
     let mut reasons = Vec::new();
 
     for cmd in cmds {
-        if let Classification::Dangerous { reason } = classify(cmd) {
-            reasons.push(reason);
+        match classify(cmd) {
+            Classification::Dangerous { reason } => {
+                // Check if this command is in the additional safe list
+                if additional_safe.iter().any(|s| s == &cmd.command) {
+                    continue;
+                }
+                reasons.push(reason);
+            }
+            Classification::Safe => {}
         }
     }
 
@@ -180,8 +190,28 @@ mod tests {
     fn test_classify_all_mixed() {
         let cmds = vec![cmd("echo", &["hello"]), cmd("rm", &["-rf", "/tmp/x"])];
         assert!(matches!(
-            classify_all(&cmds),
+            classify_all(&cmds, &[]),
             Classification::Dangerous { .. }
         ));
+    }
+
+    #[test]
+    fn test_classify_all_additional_safe() {
+        // "my_custom_script" is normally dangerous (not in allowlist)
+        let cmds = vec![cmd("my_custom_script", &["--flag"])];
+        assert!(matches!(
+            classify_all(&cmds, &[]),
+            Classification::Dangerous { .. }
+        ));
+
+        // But if it's in additional_safe, the chain becomes safe
+        let additional = vec!["my_custom_script".to_string()];
+        assert_eq!(classify_all(&cmds, &additional), Classification::Safe);
+    }
+
+    #[test]
+    fn test_classify_all_all_safe() {
+        let cmds = vec![cmd("echo", &["hello"]), cmd("ls", &["-la"])];
+        assert_eq!(classify_all(&cmds, &[]), Classification::Safe);
     }
 }

@@ -7,6 +7,8 @@
 //! - list_protected_paths: show protected directories for this OS
 
 use std::path::PathBuf;
+use std::process::Stdio;
+use std::sync::Arc;
 use std::time::Instant;
 
 use rmcp::{
@@ -18,10 +20,13 @@ use rmcp::{
     tool, tool_handler, tool_router,
 };
 use serde::Deserialize;
+use tokio::sync::Semaphore;
 
+use crate::config::Config;
 use crate::pipeline::logging::{self, LogEvent};
 use crate::pipeline::{classifier, location_guard, parser, permission_gate};
 use crate::platform;
+use crate::sanitizer::Sanitizer;
 
 // ── Tool input schemas ──────────────────────────────────────────────
 
@@ -45,12 +50,20 @@ pub struct ExecuteCommandRequest {
 
 #[derive(Clone)]
 pub struct SafeShellServer {
+    config: Arc<Config>,
+    sanitizer: Arc<Sanitizer>,
+    concurrency: Arc<Semaphore>,
     tool_router: ToolRouter<SafeShellServer>,
 }
 
 impl SafeShellServer {
-    pub fn new() -> Self {
+    pub fn new(config: Config) -> Self {
+        let max_conc = config.max_concurrency.max(1);
+        let sanitizer = Sanitizer::new(&config.redact_env_patterns);
         Self {
+            config: Arc::new(config),
+            sanitizer: Arc::new(sanitizer),
+            concurrency: Arc::new(Semaphore::new(max_conc)),
             tool_router: Self::tool_router(),
         }
     }
@@ -58,10 +71,6 @@ impl SafeShellServer {
 
 #[tool_router]
 impl SafeShellServer {
-    /// Execute a shell command with safety checks.
-    ///
-    /// The command flows through the safety pipeline:
-    /// Parse → Classify → Guard (Location) → Gate (Permission) → Execute
     #[tool(
         description = "Execute a shell command with safety checks. Commands are classified as safe or dangerous, protected paths are hard-blocked, and dangerous commands require user approval."
     )]
@@ -70,14 +79,25 @@ impl SafeShellServer {
         context: RequestContext<RoleServer>,
         Parameters(req): Parameters<ExecuteCommandRequest>,
     ) -> Result<CallToolResult, McpError> {
-        let timeout_secs = req.timeout_seconds.unwrap_or(30);
+        // ── Concurrency guard (Phase 3.7) ──
+        let _permit = match self.concurrency.try_acquire() {
+            Ok(p) => p,
+            Err(_) => {
+                return Ok(CallToolResult::error(vec![Content::text(
+                    "Too many concurrent commands. Please wait for the current command to finish.",
+                )]));
+            }
+        };
+
+        let timeout_secs = req
+            .timeout_seconds
+            .unwrap_or(self.config.default_timeout_seconds);
         let working_dir = req
             .working_directory
             .as_deref()
             .map(PathBuf::from)
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")));
 
-        // Build the full command string for parsing
         let full_command = if req.args.is_empty() {
             req.command.clone()
         } else {
@@ -95,8 +115,9 @@ impl SafeShellServer {
 
         let parsed = parser::parse(&full_command, &working_dir);
 
-        // ── Stage 2: Classify ──
-        let classification = classifier::classify_all(&parsed.commands);
+        // ── Stage 2: Classify (per sub-command, Phase 3.2) ──
+        let classification =
+            classifier::classify_all(&parsed.commands, &self.config.additional_safe_commands);
         let (class_str, class_reason) = match &classification {
             classifier::Classification::Safe => ("safe", String::new()),
             classifier::Classification::Dangerous { reason } => ("dangerous", reason.clone()),
@@ -112,8 +133,12 @@ impl SafeShellServer {
         )
         .await;
 
-        // ── Stage 3: Location Guard ──
-        let guard = location_guard::check_paths(&parsed.commands, &classification);
+        // ── Stage 3: Location Guard (with symlink resolution, Phase 3.5) ──
+        let guard = location_guard::check_paths(
+            &parsed.commands,
+            &classification,
+            &self.config.additional_protected_paths,
+        );
         if let location_guard::GuardVerdict::Blocked { violations } = &guard {
             let violation_desc: Vec<String> = violations
                 .iter()
@@ -182,18 +207,20 @@ impl SafeShellServer {
             }
         }
 
-        // ── Stage 5: Execute ──
+        // ── Stage 5: Execute (shell selection, output limits, sanitization) ──
         let start = Instant::now();
 
-        let shell = default_shell();
-        let shell_flag = shell_flag();
+        let (shell, shell_flag) = resolve_shell(&self.config);
 
         let result = tokio::time::timeout(
             std::time::Duration::from_secs(timeout_secs),
             tokio::process::Command::new(&shell)
-                .arg(shell_flag)
+                .arg(&shell_flag)
                 .arg(&full_command)
                 .current_dir(&working_dir)
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .stdin(Stdio::null())
                 .output(),
         )
         .await;
@@ -203,8 +230,13 @@ impl SafeShellServer {
         match result {
             Ok(Ok(output)) => {
                 let exit_code = output.status.code().unwrap_or(-1);
-                let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-                let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+
+                let max_bytes = self.config.max_output_bytes;
+                let (stdout, stdout_truncated) = truncate_output(&output.stdout, max_bytes);
+                let (stderr, stderr_truncated) = truncate_output(&output.stderr, max_bytes);
+
+                let stdout = self.sanitizer.redact(&stdout);
+                let stderr = self.sanitizer.redact(&stderr);
 
                 logging::log_event(
                     &context,
@@ -221,10 +253,18 @@ impl SafeShellServer {
                 ))];
 
                 if !stdout.is_empty() {
-                    parts.push(Content::text(format!("stdout:\n{stdout}")));
+                    let mut text = format!("stdout:\n{stdout}");
+                    if stdout_truncated {
+                        text.push_str("\n[OUTPUT TRUNCATED]");
+                    }
+                    parts.push(Content::text(text));
                 }
                 if !stderr.is_empty() {
-                    parts.push(Content::text(format!("stderr:\n{stderr}")));
+                    let mut text = format!("stderr:\n{stderr}");
+                    if stderr_truncated {
+                        text.push_str("\n[OUTPUT TRUNCATED]");
+                    }
+                    parts.push(Content::text(text));
                 }
 
                 if exit_code == 0 {
@@ -263,16 +303,11 @@ impl SafeShellServer {
         }
     }
 
-    /// Get the system PATH environment variable.
     #[tool(
         description = "Get the system PATH environment variable, listing all directories where executables are found"
     )]
     fn get_system_path(&self) -> Result<CallToolResult, McpError> {
-        let separator = if cfg!(target_os = "windows") {
-            ";"
-        } else {
-            ":"
-        };
+        let separator = if cfg!(target_os = "windows") { ";" } else { ":" };
         let path_var = std::env::var("PATH").unwrap_or_default();
         let entries: Vec<&str> = path_var.split(separator).collect();
 
@@ -288,7 +323,6 @@ impl SafeShellServer {
         )]))
     }
 
-    /// List all commands that are pre-approved for the current OS.
     #[tool(
         description = "List all commands that are pre-approved as safe for the current OS. These commands execute without requiring user approval."
     )]
@@ -303,10 +337,13 @@ impl SafeShellServer {
             })
             .collect();
 
+        let additional: &[String] = &self.config.additional_safe_commands;
+
         let result = serde_json::json!({
             "commands": commands,
+            "additional_safe_commands": additional,
             "os": platform::os_name(),
-            "count": commands.len(),
+            "count": commands.len() + additional.len(),
         });
 
         Ok(CallToolResult::success(vec![Content::text(
@@ -314,7 +351,6 @@ impl SafeShellServer {
         )]))
     }
 
-    /// List directories protected from command execution.
     #[tool(
         description = "List directories that are protected from command execution on the current OS. Commands targeting these paths are hard-blocked."
     )]
@@ -330,10 +366,23 @@ impl SafeShellServer {
             })
             .collect();
 
+        let additional: Vec<serde_json::Value> = self
+            .config
+            .additional_protected_paths
+            .iter()
+            .map(|pp| {
+                serde_json::json!({
+                    "path": pp.path,
+                    "read_allowed": pp.read_allowed,
+                })
+            })
+            .collect();
+
         let result = serde_json::json!({
             "paths": paths,
+            "additional_protected_paths": additional,
             "os": platform::os_name(),
-            "count": paths.len(),
+            "count": paths.len() + additional.len(),
         });
 
         Ok(CallToolResult::success(vec![Content::text(
@@ -355,7 +404,9 @@ impl ServerHandler for SafeShellServer {
                 name: "safeshell-mcp".to_string(),
                 title: Some("SafeShell MCP Server".to_string()),
                 version: env!("CARGO_PKG_VERSION").to_string(),
-                description: Some("A safety-first shell command executor MCP server".to_string()),
+                description: Some(
+                    "A safety-first shell command executor MCP server".to_string(),
+                ),
                 icons: None,
                 website_url: None,
             },
@@ -370,26 +421,42 @@ impl ServerHandler for SafeShellServer {
     }
 }
 
-/// Returns the default shell for the current OS.
-fn default_shell() -> String {
-    #[cfg(target_os = "windows")]
-    {
-        std::env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".to_string())
+fn resolve_shell(config: &Config) -> (String, String) {
+    if let Some(ref shell) = config.shell {
+        return shell_with_flag(shell);
     }
+
     #[cfg(not(target_os = "windows"))]
     {
-        std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string())
+        if let Ok(shell) = std::env::var("SHELL") {
+            if std::path::Path::new(&shell).exists() {
+                return shell_with_flag(&shell);
+            }
+        }
+        ("/bin/sh".to_string(), "-c".to_string())
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let comspec = std::env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".to_string());
+        shell_with_flag(&comspec)
     }
 }
 
-/// Returns the shell flag for executing a command string.
-fn shell_flag() -> &'static str {
-    #[cfg(target_os = "windows")]
-    {
-        "/C"
+fn shell_with_flag(shell: &str) -> (String, String) {
+    let lower = shell.to_lowercase();
+    if lower.contains("powershell") || lower.contains("pwsh") {
+        (shell.to_string(), "-Command".to_string())
+    } else if lower.contains("cmd") {
+        (shell.to_string(), "/C".to_string())
+    } else {
+        (shell.to_string(), "-c".to_string())
     }
-    #[cfg(not(target_os = "windows"))]
-    {
-        "-c"
-    }
+}
+
+fn truncate_output(raw: &[u8], max_bytes: usize) -> (String, bool) {
+    let truncated = raw.len() > max_bytes;
+    let bytes = if truncated { &raw[..max_bytes] } else { raw };
+    let text = String::from_utf8_lossy(bytes).into_owned();
+    (text, truncated)
 }

@@ -1,5 +1,7 @@
+mod config;
 mod pipeline;
 mod platform;
+mod sanitizer;
 mod server;
 
 use std::env;
@@ -13,8 +15,18 @@ use tracing_subscriber::{EnvFilter, fmt};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    let config = config::Config::load();
+
+    let log_filter = config
+        .log_level
+        .as_deref()
+        .and_then(|s| s.parse::<EnvFilter>().ok())
+        .unwrap_or_else(|| {
+            EnvFilter::from_default_env().add_directive(tracing::Level::INFO.into())
+        });
+
     fmt()
-        .with_env_filter(EnvFilter::from_default_env().add_directive(tracing::Level::INFO.into()))
+        .with_env_filter(log_filter)
         .with_target(true)
         .json()
         .with_writer(std::io::stderr)
@@ -34,13 +46,14 @@ async fn main() -> anyhow::Result<()> {
     let mode = env::args().nth(2).unwrap_or_else(|| "stdio".to_string());
 
     match mode.as_str() {
-        "stdio" => run_stdio().await,
+        "stdio" => run_stdio(config).await,
         "http" => {
             let bind_idx = env::args().position(|a| a == "--bind");
             let bind = bind_idx
                 .and_then(|i| env::args().nth(i + 1))
+                .or_else(|| config.http_bind.clone())
                 .unwrap_or_else(|| "127.0.0.1:3456".to_string());
-            run_http(&bind).await
+            run_http(&bind, config).await
         }
         other => {
             eprintln!("Unknown transport: {other}. Use 'stdio' or 'http'.");
@@ -49,23 +62,29 @@ async fn main() -> anyhow::Result<()> {
     }
 }
 
-async fn run_stdio() -> anyhow::Result<()> {
+async fn run_stdio(config: config::Config) -> anyhow::Result<()> {
     tracing::info!("Starting SafeShell MCP server (stdio transport)");
-    let service = server::SafeShellServer::new()
+    let service = server::SafeShellServer::new(config)
         .serve(rmcp::transport::stdio())
         .await
         .inspect_err(|e| tracing::error!("serving error: {:?}", e))?;
-    service.waiting().await?;
+
+    tokio::select! {
+        result = service.waiting() => { result?; }
+        _ = tokio::signal::ctrl_c() => {
+            tracing::info!("Shutting down (stdio)");
+        }
+    }
     Ok(())
 }
 
-async fn run_http(bind: &str) -> anyhow::Result<()> {
+async fn run_http(bind: &str, _config: config::Config) -> anyhow::Result<()> {
     tracing::info!(bind, "Starting SafeShell MCP server (HTTP transport)");
     let addr: SocketAddr = bind.parse()?;
 
     let mcp_service: StreamableHttpService<server::SafeShellServer, LocalSessionManager> =
         StreamableHttpService::new(
-            || Ok(server::SafeShellServer::new()),
+            move || Ok(server::SafeShellServer::new(config::Config::load())),
             LocalSessionManager::default().into(),
             StreamableHttpServerConfig::default(),
         );

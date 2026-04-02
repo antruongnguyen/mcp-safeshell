@@ -2,7 +2,7 @@
 
 > A "safety-first" shell command executor MCP server built in Rust with the `rmcp` SDK. Supports both **stdio** and **HTTP (SSE/Streamable HTTP)** transports, with built-in permission gating, sensitive-location protection, activity logging, and cross-platform support.
 
-> **Status**: Active development. Team: Iron Man (CEO), Spider-Man (Phase 1), Black Panther (Phase 2), Hawkeye (Phase 3–4).
+> **Status**: Active development (Phases 0–2 complete). Team: Iron Man (CEO), Spider-Man, Black Panther, Hawkeye (all fullstack engineers — shared workload, no phase-specific ownership).
 > **Last revised**: 2026-04-02
 
 ---
